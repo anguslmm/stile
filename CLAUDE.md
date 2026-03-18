@@ -40,6 +40,10 @@ Key abstraction: the `Transport` interface (`Send`, `ListTools`, `Close`, `Healt
 - **Correctness over brevity.** Go boilerplate is fine.
 - **Minimal dependencies.** stdlib where possible. External deps: `gopkg.in/yaml.v3`, `golang.org/x/time/rate`, `prometheus/client_golang`, `santhosh-tekuri/jsonschema`, `gobwas/glob`.
 
+## Git
+
+- Do not add `Co-Authored-By` lines to commits.
+
 ## Development Workflow
 
 Tasks are defined in `docs/tasks/task-01.md` through `task-10.md` and must be completed in order. Track status in `docs/progress.md`. The design doc is at `docs/stile-design-doc.md`.
