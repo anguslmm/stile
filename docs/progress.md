@@ -1,0 +1,25 @@
+# Stile — Implementation Progress
+
+This document tracks the status of each implementation task. Agents should read this before starting work and update it when they complete a task.
+
+## Task Status
+
+| # | Task | Doc | Status |
+|---|------|-----|--------|
+| 1 | Project scaffold + JSON-RPC 2.0 codec | [task-01.md](tasks/task-01.md) | done |
+| 2 | Config + Transport interface + HTTP transport client | [task-02.md](tasks/task-02.md) | not started |
+| 3 | Inbound server + proxy handler | [task-03.md](tasks/task-03.md) | not started |
+| 4 | Stdio transport | [task-04.md](tasks/task-04.md) | not started |
+| 5 | Router + route table + tool discovery/caching | [task-05.md](tasks/task-05.md) | not started |
+| 6 | Auth middleware | [task-06.md](tasks/task-06.md) | not started |
+| 7 | Rate limiting + ACLs + input validation | [task-07.md](tasks/task-07.md) | not started |
+| 8 | Observability | [task-08.md](tasks/task-08.md) | not started |
+| 9 | Health checks + graceful shutdown + hardening | [task-09.md](tasks/task-09.md) | not started |
+| 10 | Integration tests | [task-10.md](tasks/task-10.md) | not started |
+
+## Notes
+
+- Tasks should be completed in order — each depends on the ones before it.
+- After Task 3, you can connect an MCP agent to the gateway and see it proxy to an HTTP upstream.
+- If a task changes something that affects a later task doc, update that doc.
+- The design doc is at [stile-design-doc.md](stile-design-doc.md).
