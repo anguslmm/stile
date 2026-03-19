@@ -1,0 +1,7 @@
+server:
+  address: ":8080"
+
+upstreams:
+  - name: fake
+    transport: streamable-http
+    url: http://localhost:9090/mcp
