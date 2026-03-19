@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
@@ -23,6 +25,14 @@ type ToolSchema struct {
 type TransportResult interface {
 	transportResult() // sealed — only types in this package implement TransportResult
 	ContentType() string
+
+	// Resolve returns the final JSON-RPC response. For streaming results,
+	// it reads through the event stream and closes it.
+	Resolve() (*jsonrpc.Response, error)
+
+	// WriteResponse writes the result to an HTTP response writer.
+	// For streaming results, it pipes events until EOF or client disconnect.
+	WriteResponse(ctx context.Context, w http.ResponseWriter)
 }
 
 // JSONResult is a TransportResult for non-streaming (application/json) responses.
@@ -31,9 +41,23 @@ type JSONResult struct {
 	contentType string
 }
 
-func (*JSONResult) transportResult()               {}
-func (r *JSONResult) ContentType() string           { return r.contentType }
-func (r *JSONResult) Response() *jsonrpc.Response    { return r.response }
+func (*JSONResult) transportResult()            {}
+func (r *JSONResult) ContentType() string        { return r.contentType }
+func (r *JSONResult) Response() *jsonrpc.Response { return r.response }
+
+func (r *JSONResult) Resolve() (*jsonrpc.Response, error) {
+	return r.response, nil
+}
+
+func (r *JSONResult) WriteResponse(_ context.Context, w http.ResponseWriter) {
+	data, err := json.Marshal(r.response)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
 
 // NewJSONResult creates a JSONResult wrapping the given response.
 func NewJSONResult(resp *jsonrpc.Response) *JSONResult {
@@ -47,9 +71,45 @@ type StreamResult struct {
 	contentType string
 }
 
-func (*StreamResult) transportResult()            {}
-func (r *StreamResult) ContentType() string       { return r.contentType }
-func (r *StreamResult) Stream() io.ReadCloser     { return r.stream }
+func (*StreamResult) transportResult()        {}
+func (r *StreamResult) ContentType() string   { return r.contentType }
+func (r *StreamResult) Stream() io.ReadCloser { return r.stream }
+
+func (r *StreamResult) Resolve() (*jsonrpc.Response, error) {
+	defer r.stream.Close()
+	return readFinalResponse(r.stream)
+}
+
+func (r *StreamResult) WriteResponse(ctx context.Context, w http.ResponseWriter) {
+	defer r.stream.Close()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, canFlush := w.(http.Flusher)
+
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := r.stream.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				log.Printf("transport: stream read error: %v", readErr)
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
 
 // NewStreamResult creates a StreamResult wrapping the given reader.
 func NewStreamResult(stream io.ReadCloser) *StreamResult {
@@ -78,16 +138,7 @@ func Send(ctx context.Context, t Transport, req *jsonrpc.Request) (*jsonrpc.Resp
 	if err != nil {
 		return nil, err
 	}
-
-	switch r := result.(type) {
-	case *JSONResult:
-		return r.Response(), nil
-	case *StreamResult:
-		defer r.Stream().Close()
-		return readFinalResponse(r.Stream())
-	default:
-		return nil, fmt.Errorf("transport: unexpected result type %T", result)
-	}
+	return result.Resolve()
 }
 
 func readFinalResponse(stream io.Reader) (*jsonrpc.Response, error) {
