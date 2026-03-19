@@ -117,27 +117,28 @@ type ToolSchema struct {
     InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
-// TransportResult represents the result of a round-trip to an upstream.
-// Exactly one of Response or Stream will be set.
-type TransportResult struct {
-    // Response is set for non-streaming (application/json) responses.
-    Response *jsonrpc.Response
-
-    // Stream is set for streaming (text/event-stream) responses.
-    // The caller is responsible for reading from and closing it.
-    // The proxy handler uses this to pipe SSE events directly to the agent.
-    Stream io.ReadCloser
-
-    // ContentType is the upstream's response content type.
-    // Either "application/json" or "text/event-stream".
-    ContentType string
+// TransportResult is a sealed union: either *JSONResult or *StreamResult.
+type TransportResult interface {
+    transportResult() // sealed
+    ContentType() string
 }
+
+// JSONResult is a TransportResult for non-streaming (application/json) responses.
+type JSONResult struct { /* unexported: response *jsonrpc.Response */ }
+func (r *JSONResult) Response() *jsonrpc.Response { ... }
+
+// StreamResult is a TransportResult for streaming (text/event-stream) responses.
+// The caller is responsible for reading from and closing the stream.
+type StreamResult struct { /* unexported: stream io.ReadCloser */ }
+func (r *StreamResult) Stream() io.ReadCloser { ... }
+
+// Constructors: NewJSONResult(resp), NewStreamResult(stream)
 
 // Transport is the interface for communicating with an MCP upstream.
 type Transport interface {
     // RoundTrip sends a JSON-RPC request to the upstream and returns the result.
-    // For streaming responses, the caller must read from and close Result.Stream.
-    RoundTrip(ctx context.Context, req *jsonrpc.Request) (*TransportResult, error)
+    // Callers type-switch on *JSONResult / *StreamResult.
+    RoundTrip(ctx context.Context, req *jsonrpc.Request) (TransportResult, error)
 
     // Close shuts down the transport and releases resources.
     Close() error
@@ -205,8 +206,8 @@ func NewHTTPTransport(cfg config.UpstreamConfig) (*HTTPTransport, error)
 3. If `cfg.Auth()` is non-nil, add `Authorization: Bearer <token>` header
 4. Check the response status code (non-2xx → return an error)
 5. Branch on response `Content-Type`:
-   - `application/json`: read body, unmarshal as `jsonrpc.Response`, return in `TransportResult.Response`
-   - `text/event-stream`: return body as `TransportResult.Stream` (caller closes it)
+   - `application/json`: read body, unmarshal as `jsonrpc.Response`, return as `*JSONResult`
+   - `text/event-stream`: return body as `*StreamResult` (caller closes it)
 6. Return the `ContentType` in the result
 
 ### Close / Healthy
@@ -233,8 +234,8 @@ func NewHTTPTransport(cfg config.UpstreamConfig) (*HTTPTransport, error)
 
 Use `net/http/httptest` to create mock MCP servers.
 
-1. **JSON response round-trip:** mock server returns `application/json` with a valid JSON-RPC response → `TransportResult.Response` is set, `Stream` is nil
-2. **SSE response round-trip:** mock server returns `text/event-stream` with SSE events → `TransportResult.Stream` is set, `Response` is nil, `ContentType` is `"text/event-stream"`
+1. **JSON response round-trip:** mock server returns `application/json` with a valid JSON-RPC response → result is `*JSONResult`
+2. **SSE response round-trip:** mock server returns `text/event-stream` with SSE events → result is `*StreamResult`
 3. **Send helper with JSON:** `Send()` with a JSON-responding mock → returns the `*Response` directly
 4. **Send helper with SSE:** `Send()` with an SSE-responding mock that sends a notification then a final response → returns the final `*Response`
 5. **Auth header injection:** mock server that checks for `Authorization: Bearer` header → token from env var is sent

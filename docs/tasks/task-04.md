@@ -42,7 +42,7 @@ func NewStdioTransport(cfg config.UpstreamConfig) (*StdioTransport, error)
 - Write the JSON-RPC request as a single line of JSON to stdin (marshal + newline)
 - Read the response line from stdout
 - Parse as JSON-RPC Response
-- Stdio is inherently request/response — no SSE. `TransportResult` always has `Response` set and `ContentType` of `"application/json"`.
+- Stdio is inherently request/response — no SSE. `RoundTrip` always returns a `*JSONResult`.
 
 **Request/response correlation:**
 - MCP stdio servers process requests sequentially — one request in, one response out
@@ -95,7 +95,7 @@ Build this as a `TestMain` helper or a standalone Go file compiled during tests 
 
 1. **Stdio round-trip:** start mock stdio server, send a tools/list request → get back tool list
 2. **Stdio tools/call:** send a tools/call request → get back the echoed result
-3. **Result is always non-streaming:** `TransportResult.Stream` is nil, `ContentType` is `"application/json"`
+3. **Result is always non-streaming:** result is `*JSONResult`
 4. **Process crash recovery:** kill the process, send another request → transport restarts the process and succeeds
 5. **Close shuts down process:** call `Close()`, verify process is no longer running
 6. **Concurrent requests are serialized:** send multiple requests concurrently → all get correct responses (no interleaving)

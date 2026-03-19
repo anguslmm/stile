@@ -84,6 +84,69 @@ type Response struct {
 	ID      ID              `json:"id"`
 }
 
+// MarshalJSON implements json.Marshaler for Response.
+// It handles the sealed ID interface by converting it to a JSON-compatible value.
+func (r *Response) MarshalJSON() ([]byte, error) {
+	type responseAlias struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result,omitempty"`
+		Error   *Error          `json:"error,omitempty"`
+		ID      any             `json:"id"`
+	}
+	return json.Marshal(responseAlias{
+		JSONRPC: r.JSONRPC,
+		Result:  r.Result,
+		Error:   r.Error,
+		ID:      marshalID(r.ID),
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Response.
+// It handles the sealed ID interface by parsing the raw id field.
+func (r *Response) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if v, ok := raw["jsonrpc"]; ok {
+		if err := json.Unmarshal(v, &r.JSONRPC); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["result"]; ok {
+		r.Result = v
+	}
+	if v, ok := raw["error"]; ok {
+		r.Error = new(Error)
+		if err := json.Unmarshal(v, r.Error); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["id"]; ok {
+		id, err := parseID(v)
+		if err != nil {
+			return err
+		}
+		r.ID = id
+	}
+	return nil
+}
+
+// marshalID converts an ID to a value suitable for json.Marshal.
+func marshalID(id ID) any {
+	switch v := id.(type) {
+	case StringID:
+		return string(v)
+	case IntID:
+		return int64(v)
+	case NullID:
+		return nil
+	default:
+		return nil
+	}
+}
+
 // Error represents a JSON-RPC 2.0 error object.
 type Error struct {
 	Code    int             `json:"code"`

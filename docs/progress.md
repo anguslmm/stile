@@ -7,7 +7,7 @@ This document tracks the status of each implementation task. Agents should read 
 | # | Task | Doc | Status |
 |---|------|-----|--------|
 | 1 | Project scaffold + JSON-RPC 2.0 codec | [task-01.md](tasks/task-01.md) | done |
-| 2 | Config + Transport interface + HTTP transport client | [task-02.md](tasks/task-02.md) | not started |
+| 2 | Config + Transport interface + HTTP transport client | [task-02.md](tasks/task-02.md) | done |
 | 3 | Inbound server + proxy handler | [task-03.md](tasks/task-03.md) | not started |
 | 4 | Stdio transport | [task-04.md](tasks/task-04.md) | not started |
 | 5 | Router + route table + tool discovery/caching | [task-05.md](tasks/task-05.md) | not started |

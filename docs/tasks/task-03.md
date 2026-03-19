@@ -113,9 +113,9 @@ Return the merged list of all tools from all upstreams as a JSON-RPC response. T
 2. Look up the upstream in the tool map
 3. If not found → return JSON-RPC error (code `-32602`, "unknown tool")
 4. Forward the **original JSON-RPC request** to the upstream via `Transport.RoundTrip()`
-5. Branch on `TransportResult`:
-   - If `Response` is set → return it as `application/json`
-   - If `Stream` is set → set response `Content-Type: text/event-stream` and pipe the stream through to the agent (SSE passthrough)
+5. Type-switch on `TransportResult`:
+   - `*JSONResult` → return `Response()` as `application/json`
+   - `*StreamResult` → set response `Content-Type: text/event-stream` and pipe `Stream()` through to the agent (SSE passthrough)
 
 ### Constructor
 
@@ -150,9 +150,9 @@ Keep it minimal. No fancy CLI framework — just `flag` package.
 
 When an upstream responds with `text/event-stream`, the proxy must stream it through to the agent without buffering the entire response. The flow:
 
-1. `Transport.RoundTrip()` returns `TransportResult` with `Stream` set
+1. `Transport.RoundTrip()` returns a `*StreamResult`
 2. Proxy handler sets the HTTP response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
-3. Copy from `Stream` to the `http.ResponseWriter`, flushing after each write
+3. Copy from `Stream()` to the `http.ResponseWriter`, flushing after each write
 4. Use `http.Flusher` interface to ensure events are sent immediately, not buffered
 
 ```go
