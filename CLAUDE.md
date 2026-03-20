@@ -45,6 +45,11 @@ Key abstraction: the `Transport` interface (`Send`, `ListTools`, `Close`, `Healt
 
 - Do not add `Co-Authored-By` lines to commits.
 
+## Documentation
+
+- **`docs/request-flow.md`** — End-to-end walkthrough of the request path through Stile. If you change the request pipeline (auth, routing, proxying, response handling), update this doc to match.
+- **`docs/stile-design-doc.md`** — Original design doc.
+
 ## Development Workflow
 
 Tasks are defined in `docs/tasks/task-01.md` through `task-10.md` and must be completed in order. Track status in `docs/progress.md`. The design doc is at `docs/stile-design-doc.md`.
