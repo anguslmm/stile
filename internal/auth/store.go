@@ -205,6 +205,105 @@ func (s *SQLiteStore) DeleteCaller(name string) error {
 	return nil
 }
 
+// CallerInfo holds summary information about a caller for listing.
+type CallerInfo struct {
+	Name     string
+	KeyCount int
+	Roles    []string
+}
+
+// ListCallers returns all callers with their key count and assigned roles.
+func (s *SQLiteStore) ListCallers() ([]CallerInfo, error) {
+	rows, err := s.db.Query(`
+		SELECT c.name, COUNT(k.id)
+		FROM callers c
+		LEFT JOIN api_keys k ON k.caller_id = c.id
+		GROUP BY c.id
+		ORDER BY c.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list callers: %w", err)
+	}
+	defer rows.Close()
+
+	var callers []CallerInfo
+	for rows.Next() {
+		var ci CallerInfo
+		if err := rows.Scan(&ci.Name, &ci.KeyCount); err != nil {
+			return nil, fmt.Errorf("auth: scan caller: %w", err)
+		}
+		roles, err := s.RolesForCaller(ci.Name)
+		if err != nil {
+			return nil, err
+		}
+		ci.Roles = roles
+		callers = append(callers, ci)
+	}
+	return callers, rows.Err()
+}
+
+// KeyInfo holds summary information about an API key (no secrets).
+type KeyInfo struct {
+	Label     string
+	CreatedAt string
+}
+
+// ListKeysForCaller returns metadata for all keys belonging to a caller.
+func (s *SQLiteStore) ListKeysForCaller(callerName string) ([]KeyInfo, error) {
+	rows, err := s.db.Query(`
+		SELECT COALESCE(k.label, ''), k.created_at
+		FROM api_keys k
+		JOIN callers c ON c.id = k.caller_id
+		WHERE c.name = ?
+	`, callerName)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []KeyInfo
+	for rows.Next() {
+		var ki KeyInfo
+		if err := rows.Scan(&ki.Label, &ki.CreatedAt); err != nil {
+			return nil, fmt.Errorf("auth: scan key: %w", err)
+		}
+		keys = append(keys, ki)
+	}
+	return keys, rows.Err()
+}
+
+// KeyCountForCaller returns the number of API keys a caller has.
+func (s *SQLiteStore) KeyCountForCaller(callerName string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(k.id)
+		FROM api_keys k
+		JOIN callers c ON c.id = k.caller_id
+		WHERE c.name = ?
+	`, callerName).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("auth: count keys: %w", err)
+	}
+	return count, nil
+}
+
+// RevokeKey deletes an API key by caller name and label.
+func (s *SQLiteStore) RevokeKey(callerName string, label string) error {
+	result, err := s.db.Exec(`
+		DELETE FROM api_keys
+		WHERE caller_id = (SELECT id FROM callers WHERE name = ?)
+		AND label = ?
+	`, callerName, label)
+	if err != nil {
+		return fmt.Errorf("auth: revoke key: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("auth: no key with label %q found for caller %q", label, callerName)
+	}
+	return nil
+}
+
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

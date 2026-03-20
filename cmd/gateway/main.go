@@ -20,6 +20,32 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "add-caller":
+			runAddCaller(os.Args[2:])
+			return
+		case "add-key":
+			runAddKey(os.Args[2:])
+			return
+		case "assign-role":
+			runAssignRole(os.Args[2:])
+			return
+		case "unassign-role":
+			runUnassignRole(os.Args[2:])
+			return
+		case "list-callers":
+			runListCallers(os.Args[2:])
+			return
+		case "remove-caller":
+			runRemoveCaller(os.Args[2:])
+			return
+		case "revoke-key":
+			runRevokeKey(os.Args[2:])
+			return
+		}
+	}
+
 	configPath := flag.String("config", "configs/stile.yaml", "path to config file")
 	flag.Parse()
 

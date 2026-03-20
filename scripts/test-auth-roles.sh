@@ -30,6 +30,7 @@ cleanup() {
     [ -n "$UPSTREAM_PID" ] && kill "$UPSTREAM_PID" 2>/dev/null
     rm -f "$DB" "$DB-shm" "$DB-wal"
     [ -n "$CONFIG" ] && rm -f "$CONFIG"
+    rm -f /tmp/stile-test-bin
     wait 2>/dev/null
     return 0
 }
@@ -39,7 +40,7 @@ trap cleanup EXIT
 
 check_contains() {
     local desc="$1" expected="$2" actual="$3"
-    if echo "$actual" | grep -qF "$expected"; then
+    if echo "$actual" | grep -qF -- "$expected"; then
         echo "  PASS: $desc"
         PASS=$((PASS + 1))
     else
@@ -52,7 +53,7 @@ check_contains() {
 
 check_not_contains() {
     local desc="$1" unwanted="$2" actual="$3"
-    if echo "$actual" | grep -qF "$unwanted"; then
+    if echo "$actual" | grep -qF -- "$unwanted"; then
         echo "  FAIL: $desc"
         echo "    should NOT contain: $unwanted"
         echo "    got: $actual"
@@ -97,13 +98,24 @@ for port in 8080 9090; do
 done
 
 echo "Building..."
-go build ./... || exit 1
+go build -o /tmp/stile-test-bin ./cmd/gateway/ || exit 1
+STILE=/tmp/stile-test-bin
 
 echo "Seeding database at $DB..."
-SEED_OUTPUT=$(go run ./cmd/seed/ "$DB" 2>&1)
-ALICE_KEY=$(echo "$SEED_OUTPUT" | grep -A1 "alice" | tail -1 | tr -d ' ')
-BOB_KEY=$(echo "$SEED_OUTPUT" | grep -A1 "bob" | tail -1 | tr -d ' ')
-CHARLIE_KEY=$(echo "$SEED_OUTPUT" | grep -A1 "charlie" | tail -1 | tr -d ' ')
+$STILE add-caller --name alice --db "$DB"
+$STILE add-caller --name bob --db "$DB"
+$STILE add-caller --name charlie --db "$DB"
+
+$STILE assign-role --caller alice --role http-only --db "$DB"
+$STILE assign-role --caller alice --role stdio-only --db "$DB"
+$STILE assign-role --caller bob --role full-access --db "$DB"
+$STILE assign-role --caller charlie --role http-only --db "$DB"
+
+extract_key() { grep '^  sk-' | tr -d ' '; }
+
+ALICE_KEY=$($STILE add-key --caller alice --label "alice-key" --db "$DB" | extract_key)
+BOB_KEY=$($STILE add-key --caller bob --label "bob-key" --db "$DB" | extract_key)
+CHARLIE_KEY=$($STILE add-key --caller charlie --label "charlie-key" --db "$DB" | extract_key)
 
 echo "  alice:   $ALICE_KEY"
 echo "  bob:     $BOB_KEY"
@@ -154,7 +166,7 @@ sleep 1
 
 echo "Starting gateway on :8080..."
 FAKE_HTTP_TOKEN=fake-token STDIO_TOKEN=stdio-token \
-    go run ./cmd/gateway/ -config "$CONFIG" >"$GATEWAY_LOG" 2>&1 &
+    $STILE -config "$CONFIG" >"$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
 # Wait for gateway to be ready (up to 15s for go run compilation).
