@@ -14,6 +14,7 @@ import (
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
@@ -39,7 +40,7 @@ func (m *mockTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (tr
 	return transport.NewJSONResult(resp), nil
 }
 
-func (m *mockTransport) Close() error { return nil }
+func (m *mockTransport) Close() error  { return nil }
 func (m *mockTransport) Healthy() bool { return true }
 
 // failingTransport always fails on tools/list.
@@ -48,7 +49,7 @@ type failingTransport struct{}
 func (f *failingTransport) RoundTrip(_ context.Context, _ *jsonrpc.Request) (transport.TransportResult, error) {
 	return nil, fmt.Errorf("connection refused")
 }
-func (f *failingTransport) Close() error { return nil }
+func (f *failingTransport) Close() error  { return nil }
 func (f *failingTransport) Healthy() bool { return false }
 
 func newTestConfig(names ...string) *config.Config {
@@ -61,6 +62,16 @@ func newTestConfig(names ...string) *config.Config {
 		panic(err)
 	}
 	return cfg
+}
+
+func newTestRouter(t *testing.T, names []string, transports map[string]transport.Transport) *router.RouteTable {
+	t.Helper()
+	cfg := newTestConfig(names...)
+	rt, err := router.New(transports, cfg.Upstreams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
 }
 
 func TestToolsListMergesUpstreams(t *testing.T) {
@@ -76,18 +87,12 @@ func TestToolsListMergesUpstreams(t *testing.T) {
 		},
 	}
 
-	cfg := newTestConfig("a", "b")
-	idx := 0
-	mocks := []transport.Transport{mockA, mockB}
-
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		m := mocks[idx]
-		idx++
-		return m, nil
+	rt := newTestRouter(t, []string{"a", "b"}, map[string]transport.Transport{
+		"a": mockA, "b": mockB,
 	})
-	if err != nil {
-		t.Fatalf("NewHandlerWithFactory: %v", err)
-	}
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
 	if err != nil {
@@ -134,18 +139,12 @@ func TestToolsCallDispatchesCorrectly(t *testing.T) {
 		},
 	}
 
-	cfg := newTestConfig("a", "b")
-	idx := 0
-	mocks := []transport.Transport{mockA, mockB}
-
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		m := mocks[idx]
-		idx++
-		return m, nil
+	rt := newTestRouter(t, []string{"a", "b"}, map[string]transport.Transport{
+		"a": mockA, "b": mockB,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	params, _ := json.Marshal(map[string]any{"name": "beta", "arguments": map[string]any{}})
 	req := &jsonrpc.Request{
@@ -174,13 +173,10 @@ func TestToolsCallUnknownTool(t *testing.T) {
 		tools: []transport.ToolSchema{{Name: "alpha"}},
 	}
 
-	cfg := newTestConfig("a")
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		return mockA, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	params, _ := json.Marshal(map[string]any{"name": "nonexistent"})
 	req := &jsonrpc.Request{
@@ -212,19 +208,13 @@ func TestUpstreamDownAtStartup(t *testing.T) {
 		tools: []transport.ToolSchema{{Name: "alpha"}},
 	}
 
-	cfg := newTestConfig("healthy", "broken")
-	idx := 0
-
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		idx++
-		if idx == 1 {
-			return healthyMock, nil
-		}
-		return &failingTransport{}, nil
+	rt := newTestRouter(t, []string{"healthy", "broken"}, map[string]transport.Transport{
+		"healthy": healthyMock,
+		"broken":  &failingTransport{},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
 	if err != nil {
@@ -254,13 +244,10 @@ func TestToolsCallSSEPassthrough(t *testing.T) {
 		},
 	}
 
-	cfg := newTestConfig("a")
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		return mockA, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	params, _ := json.Marshal(map[string]any{"name": "streamy"})
 	req := &jsonrpc.Request{
@@ -293,13 +280,10 @@ func TestToolsCallWritesDirectResponse(t *testing.T) {
 		},
 	}
 
-	cfg := newTestConfig("a")
-	h, err := NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		return mockA, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	params, _ := json.Marshal(map[string]any{"name": "direct"})
 	req := &jsonrpc.Request{
@@ -360,9 +344,6 @@ func TestMixedHTTPAndStdioUpstreams(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req jsonrpc.Request
-		// Parse with raw map to handle sealed ID.
-		var raw map[string]json.RawMessage
-		json.Unmarshal(body, &raw)
 		json.Unmarshal(body, &req)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -399,11 +380,29 @@ upstreams:
 		t.Fatalf("LoadBytes: %v", err)
 	}
 
-	h, err := NewHandler(cfg)
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
+	// Create transports and router.
+	transports := make(map[string]transport.Transport)
+	for _, ucfg := range cfg.Upstreams() {
+		var tr transport.Transport
+		switch ucfg.Transport() {
+		case "streamable-http":
+			tr, err = transport.NewHTTPTransport(ucfg)
+		case "stdio":
+			tr, err = transport.NewStdioTransport(ucfg)
+		}
+		if err != nil {
+			t.Fatalf("create transport %q: %v", ucfg.Name(), err)
+		}
+		transports[ucfg.Name()] = tr
 	}
-	defer h.Close()
+
+	rt, err := router.New(transports, cfg.Upstreams())
+	if err != nil {
+		t.Fatalf("New router: %v", err)
+	}
+	defer rt.Close()
+
+	h := NewHandler(rt)
 
 	// tools/list should return tools from both upstreams.
 	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
@@ -480,11 +479,7 @@ upstreams:
 func buildMockStdioServer(t *testing.T) string {
 	t.Helper()
 	binary := t.TempDir() + "/mock_stdio_server"
-	cmd := exec.Command("go", "build", "-o", binary,
-		"./testdata_proxy_mock_stdio_server.go")
-	cmd.Dir = t.TempDir()
 
-	// Write a small mock server inline for proxy tests.
 	mockSrc := `package main
 
 import (
@@ -544,18 +539,13 @@ func main() {
 	}
 }
 `
-	srcPath := cmd.Dir + "/testdata_proxy_mock_stdio_server.go"
+	srcDir := t.TempDir()
+	srcPath := srcDir + "/main.go"
 	os.WriteFile(srcPath, []byte(mockSrc), 0644)
-	cmd = exec.Command("go", "build", "-o", binary, srcPath)
+	cmd := exec.Command("go", "build", "-o", binary, srcPath)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to build mock stdio server: %v", err)
 	}
 	return binary
-}
-
-// suppress log output during tests
-func init() {
-	// Tests produce expected log warnings for failing upstreams.
-	_ = http.StatusOK // ensure net/http import is used
 }

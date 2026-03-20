@@ -14,6 +14,7 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/proxy"
+	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
@@ -38,7 +39,7 @@ func (m *mockTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (tr
 	return transport.NewJSONResult(resp), nil
 }
 
-func (m *mockTransport) Close() error { return nil }
+func (m *mockTransport) Close() error  { return nil }
 func (m *mockTransport) Healthy() bool { return true }
 
 func newTestServer(t *testing.T, mock *mockTransport) *httptest.Server {
@@ -54,14 +55,17 @@ func newTestServer(t *testing.T, mock *mockTransport) *httptest.Server {
 		t.Fatal(err)
 	}
 
-	h, err := proxy.NewHandlerWithFactory(cfg, func(_ config.UpstreamConfig) (transport.Transport, error) {
-		return mock, nil
-	})
+	rt, err := router.New(
+		map[string]transport.Transport{"test": mock},
+		cfg.Upstreams(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { rt.Close() })
 
-	srv := New(cfg, h)
+	h := proxy.NewHandler(rt)
+	srv := New(cfg, h, rt)
 	return httptest.NewServer(srv.Handler())
 }
 
@@ -378,6 +382,47 @@ func TestBatchWithNotification(t *testing.T) {
 	// Only the ping should produce a response, not the notification.
 	if len(responses) != 1 {
 		t.Fatalf("expected 1 response (notification should produce none), got %d", len(responses))
+	}
+}
+
+func TestAdminRefresh(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{
+			{Name: "tool-a"},
+			{Name: "tool-b"},
+		},
+	}
+	ts := newTestServer(t, mock)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/admin/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var result router.RefreshResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("unmarshal refresh result: %v (body: %s)", err, string(body))
+	}
+
+	if result.TotalTools != 2 {
+		t.Errorf("expected total_tools=2, got %d", result.TotalTools)
+	}
+	status, ok := result.Upstreams["test"]
+	if !ok {
+		t.Fatal("expected upstream 'test' in result")
+	}
+	if status.Tools != 2 {
+		t.Errorf("expected 2 tools for upstream 'test', got %d", status.Tools)
+	}
+	if status.Stale {
+		t.Error("upstream 'test' should not be stale")
 	}
 }
 

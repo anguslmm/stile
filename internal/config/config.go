@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +17,7 @@ type Config struct {
 
 // Server returns the server configuration.
 func (c *Config) Server() ServerConfig {
-	return ServerConfig{address: c.server.address}
+	return ServerConfig{address: c.server.address, toolCacheTTL: c.server.toolCacheTTL}
 }
 
 // Upstreams returns a copy of the upstream configurations.
@@ -28,14 +29,20 @@ func (c *Config) Upstreams() []UpstreamConfig {
 
 // ServerConfig provides read-only access to server settings.
 type ServerConfig struct {
-	address string
+	address      string
+	toolCacheTTL time.Duration
 }
 
 // Address returns the listen address (e.g. ":8080").
 func (s ServerConfig) Address() string { return s.address }
 
+// ToolCacheTTL returns how often tool schemas are refreshed from upstreams.
+// Default: 5 minutes.
+func (s ServerConfig) ToolCacheTTL() time.Duration { return s.toolCacheTTL }
+
 type serverConfig struct {
-	address string
+	address      string
+	toolCacheTTL time.Duration
 }
 
 // UpstreamConfig provides read-only access to an upstream's settings.
@@ -90,7 +97,8 @@ type rawConfig struct {
 }
 
 type rawServerConfig struct {
-	Address string `yaml:"address"`
+	Address      string `yaml:"address"`
+	ToolCacheTTL string `yaml:"tool_cache_ttl"`
 }
 
 type rawUpstreamConfig struct {
@@ -146,6 +154,16 @@ func convert(raw rawConfig) (*Config, error) {
 	}
 	if cfg.server.address == "" {
 		cfg.server.address = ":8080"
+	}
+
+	if raw.Server.ToolCacheTTL != "" {
+		ttl, err := time.ParseDuration(raw.Server.ToolCacheTTL)
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid tool_cache_ttl %q: %w", raw.Server.ToolCacheTTL, err)
+		}
+		cfg.server.toolCacheTTL = ttl
+	} else {
+		cfg.server.toolCacheTTL = 5 * time.Minute
 	}
 
 	cfg.upstreams = make([]UpstreamConfig, len(raw.Upstreams))

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/proxy"
+	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/server"
+	"github.com/anguslmm/stile/internal/transport"
 )
 
 func main() {
@@ -23,13 +26,23 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	handler, err := proxy.NewHandler(cfg)
+	transports, err := buildTransports(cfg)
 	if err != nil {
-		log.Fatalf("create proxy handler: %v", err)
+		log.Fatalf("create transports: %v", err)
 	}
-	defer handler.Close()
 
-	srv := server.New(cfg, handler)
+	rt, err := router.New(transports, cfg.Upstreams())
+	if err != nil {
+		log.Fatalf("create router: %v", err)
+	}
+
+	if ttl := cfg.Server().ToolCacheTTL(); ttl > 0 {
+		rt.StartBackgroundRefresh(ttl)
+	}
+	defer rt.Close()
+
+	handler := proxy.NewHandler(rt)
+	srv := server.New(cfg, handler, rt)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -49,4 +62,26 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Printf("server stopped: %v", err)
 	}
+}
+
+func buildTransports(cfg *config.Config) (map[string]transport.Transport, error) {
+	transports := make(map[string]transport.Transport)
+	for _, ucfg := range cfg.Upstreams() {
+		var t transport.Transport
+		var err error
+		switch ucfg.Transport() {
+		case "streamable-http":
+			t, err = transport.NewHTTPTransport(ucfg)
+		case "stdio":
+			t, err = transport.NewStdioTransport(ucfg)
+		default:
+			err = fmt.Errorf("unsupported transport type %q", ucfg.Transport())
+		}
+		if err != nil {
+			log.Printf("skip upstream %q: %v", ucfg.Name(), err)
+			continue
+		}
+		transports[ucfg.Name()] = t
+	}
+	return transports, nil
 }

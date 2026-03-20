@@ -10,6 +10,7 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/proxy"
+	"github.com/anguslmm/stile/internal/router"
 )
 
 const supportedProtocolVersion = "2025-11-25"
@@ -18,14 +19,16 @@ const supportedProtocolVersion = "2025-11-25"
 type Server struct {
 	httpServer *http.Server
 	proxy      *proxy.Handler
+	router     *router.RouteTable
 }
 
-// New creates a Server from config and proxy handler.
-func New(cfg *config.Config, p *proxy.Handler) *Server {
-	s := &Server{proxy: p}
+// New creates a Server from config, proxy handler, and router.
+func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable) *Server {
+	s := &Server{proxy: p, router: rt}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", s.handleMCP)
+	mux.HandleFunc("POST /admin/refresh", s.handleRefresh)
 
 	s.httpServer = &http.Server{
 		Addr:    cfg.Server().Address(),
@@ -182,6 +185,17 @@ func (s *Server) handleToolsList(req *jsonrpc.Request) *jsonrpc.Response {
 		return jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInternalError, err.Error())
 	}
 	return resp
+}
+
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	result := s.router.Refresh(r.Context())
+	data, err := json.Marshal(result)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
 }
 
 func writeError(w http.ResponseWriter, id jsonrpc.ID, code int, message string) {

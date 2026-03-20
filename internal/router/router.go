@@ -1,0 +1,258 @@
+// Package router maps tool names to upstream transports.
+// It handles tool discovery, caching, background refresh, and conflict resolution.
+package router
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/transport"
+)
+
+// Route maps a tool to the upstream that owns it.
+type Route struct {
+	Tool     transport.ToolSchema
+	Upstream *Upstream
+}
+
+// Upstream holds a transport and its discovered tools.
+type Upstream struct {
+	Name        string
+	Transport   transport.Transport
+	Config      config.UpstreamConfig
+	Tools       []transport.ToolSchema
+	Stale       bool
+	LastRefresh time.Time
+}
+
+// UpstreamStatus reports the state of an upstream after a refresh.
+type UpstreamStatus struct {
+	Tools int  `json:"tools"`
+	Stale bool `json:"stale"`
+}
+
+// RefreshResult is the response returned by Refresh, used by the admin endpoint.
+type RefreshResult struct {
+	Upstreams  map[string]UpstreamStatus `json:"upstreams"`
+	TotalTools int                       `json:"total_tools"`
+}
+
+// RouteTable maps tool names to upstreams and manages tool discovery.
+type RouteTable struct {
+	mu        sync.RWMutex
+	entries   map[string]*Route // tool name → route
+	upstreams []*Upstream
+
+	stopCh    chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// New creates a RouteTable, builds the upstream list from transports and configs,
+// and runs an initial Refresh. Individual upstream failures during initial refresh
+// are non-fatal — the upstream is marked stale and its tools remain empty.
+func New(transports map[string]transport.Transport, configs []config.UpstreamConfig) (*RouteTable, error) {
+	rt := &RouteTable{
+		entries: make(map[string]*Route),
+		stopCh:  make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	close(rt.done) // no background goroutine yet
+
+	for _, cfg := range configs {
+		t, ok := transports[cfg.Name()]
+		if !ok {
+			log.Printf("router: no transport for upstream %q, skipping", cfg.Name())
+			continue
+		}
+		rt.upstreams = append(rt.upstreams, &Upstream{
+			Name:      cfg.Name(),
+			Transport: t,
+			Config:    cfg,
+		})
+	}
+
+	rt.Refresh(context.Background())
+
+	return rt, nil
+}
+
+// Resolve looks up which upstream handles a tool.
+func (rt *RouteTable) Resolve(toolName string) (*Route, error) {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	route, ok := rt.entries[toolName]
+	if !ok {
+		return nil, fmt.Errorf("unknown tool %q", toolName)
+	}
+	return route, nil
+}
+
+// ListTools returns the merged list of all tools from all upstreams.
+func (rt *RouteTable) ListTools() []transport.ToolSchema {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	var tools []transport.ToolSchema
+	for _, u := range rt.upstreams {
+		tools = append(tools, u.Tools...)
+	}
+	return tools
+}
+
+// Refresh re-discovers tools from all upstreams and rebuilds the route table.
+// Individual upstream failures are non-fatal: the upstream is marked stale but
+// its existing tools are kept in the route table.
+func (rt *RouteTable) Refresh(ctx context.Context) *RefreshResult {
+	type discovered struct {
+		upstream *Upstream
+		tools    []transport.ToolSchema
+		err      error
+	}
+
+	results := make([]discovered, len(rt.upstreams))
+	for i, u := range rt.upstreams {
+		tools, err := discoverTools(ctx, u.Transport)
+		results[i] = discovered{upstream: u, tools: tools, err: err}
+	}
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	for _, d := range results {
+		if d.err != nil {
+			log.Printf("router: refresh upstream %q: %v", d.upstream.Name, d.err)
+			d.upstream.Stale = true
+		} else {
+			d.upstream.Tools = d.tools
+			d.upstream.Stale = false
+			d.upstream.LastRefresh = time.Now()
+		}
+	}
+
+	rt.rebuildEntriesLocked()
+
+	status := &RefreshResult{
+		Upstreams:  make(map[string]UpstreamStatus),
+		TotalTools: len(rt.entries),
+	}
+	for _, u := range rt.upstreams {
+		status.Upstreams[u.Name] = UpstreamStatus{
+			Tools: len(u.Tools),
+			Stale: u.Stale,
+		}
+	}
+	return status
+}
+
+// RefreshUpstream refreshes a single upstream.
+func (rt *RouteTable) RefreshUpstream(ctx context.Context, name string) error {
+	var target *Upstream
+	for _, u := range rt.upstreams {
+		if u.Name == name {
+			target = u
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("unknown upstream %q", name)
+	}
+
+	tools, err := discoverTools(ctx, target.Transport)
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if err != nil {
+		target.Stale = true
+		return err
+	}
+
+	target.Tools = tools
+	target.Stale = false
+	target.LastRefresh = time.Now()
+
+	rt.rebuildEntriesLocked()
+	return nil
+}
+
+// rebuildEntriesLocked rebuilds the route table entries from all upstreams.
+// First upstream in order wins for duplicate tool names. Must be called with mu held.
+func (rt *RouteTable) rebuildEntriesLocked() {
+	rt.entries = make(map[string]*Route)
+	for _, u := range rt.upstreams {
+		for _, tool := range u.Tools {
+			if _, exists := rt.entries[tool.Name]; exists {
+				log.Printf("router: duplicate tool %q from upstream %q, keeping first", tool.Name, u.Name)
+				continue
+			}
+			rt.entries[tool.Name] = &Route{
+				Tool:     tool,
+				Upstream: u,
+			}
+		}
+	}
+}
+
+// StartBackgroundRefresh starts a goroutine that refreshes all upstreams
+// on the given interval. Stop it by calling Close.
+func (rt *RouteTable) StartBackgroundRefresh(interval time.Duration) {
+	rt.done = make(chan struct{})
+	go func() {
+		defer close(rt.done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				rt.Refresh(context.Background())
+			case <-rt.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+// Close stops the background refresh goroutine and closes all upstream transports.
+func (rt *RouteTable) Close() {
+	rt.closeOnce.Do(func() {
+		close(rt.stopCh)
+		<-rt.done
+		for _, u := range rt.upstreams {
+			u.Transport.Close()
+		}
+	})
+}
+
+func discoverTools(ctx context.Context, t transport.Transport) ([]transport.ToolSchema, error) {
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/list",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	resp, err := transport.Send(ctx, t, req)
+	if err != nil {
+		return nil, fmt.Errorf("tools/list request: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tools/list error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Tools []transport.ToolSchema `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tools/list result: %w", err)
+	}
+
+	return result.Tools, nil
+}
