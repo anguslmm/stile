@@ -1,6 +1,6 @@
 # Task 5: Router + Route Table + Tool Discovery & Caching
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 3 (proxy handler), Task 4 (stdio transport)
 **Needed by:** Task 6 (auth — tool filtering uses the route table)
 

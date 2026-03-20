@@ -1,6 +1,6 @@
 # Task 6.1: Role-Based Access Control
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 6 (auth — current implementation)
 **Needed by:** Task 6.2 (decouple roles from keys), Task 6.3 (CLI), Task 11 (admin API)
 

@@ -1,6 +1,6 @@
 # Task 6.2: Decouple Roles from API Keys
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 6.1 (role-based access control)
 **Needed by:** Task 6.3 (CLI), Task 11 (admin API)
 

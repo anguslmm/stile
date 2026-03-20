@@ -1,6 +1,6 @@
 # Task 2: Config + Transport Interface + HTTP Transport Client
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 1 (JSON-RPC codec)
 **Needed by:** Task 3 (inbound server + proxy handler)
 

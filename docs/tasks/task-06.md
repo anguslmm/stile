@@ -1,6 +1,6 @@
 # Task 6: Auth Middleware
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 3 (server), Task 5 (router — for filtered tools/list)
 **Needed by:** Task 7 (rate limiting references caller identity)
 

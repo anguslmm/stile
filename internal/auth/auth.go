@@ -19,8 +19,8 @@ import (
 // Caller represents an authenticated caller with their access permissions.
 type Caller struct {
 	Name         string
-	Role         string      // from the key used to authenticate (for credential injection)
-	AllowedTools []glob.Glob // union of ALL roles the caller has keys for
+	Roles        []string    // all roles assigned to this caller, in config order
+	AllowedTools []glob.Glob // union of all roles' patterns
 }
 
 // CanAccessTool reports whether the caller is allowed to use the named tool.
@@ -58,6 +58,7 @@ type Authenticator struct {
 	store        CallerStore
 	credentials  map[string]map[string]string // role name → upstream name → token value
 	allowedTools map[string][]glob.Glob       // role name → compiled patterns
+	roleOrder    []string                     // role names in config order
 }
 
 // NewAuthenticator creates an Authenticator, resolving role config into
@@ -66,8 +67,11 @@ type Authenticator struct {
 func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticator {
 	creds := make(map[string]map[string]string, len(roles))
 	globs := make(map[string][]glob.Glob, len(roles))
+	order := make([]string, 0, len(roles))
 
 	for _, role := range roles {
+		order = append(order, role.Name())
+
 		tokens := make(map[string]string)
 		for upstream, envVar := range role.Credentials() {
 			val := os.Getenv(envVar)
@@ -88,7 +92,12 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 		globs[role.Name()] = compiled
 	}
 
-	return &Authenticator{store: store, credentials: creds, allowedTools: globs}
+	return &Authenticator{
+		store:        store,
+		credentials:  creds,
+		allowedTools: globs,
+		roleOrder:    order,
+	}
 }
 
 // Authenticate extracts and validates bearer token from the request.
@@ -118,12 +127,13 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Caller, error) {
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	// Get ALL roles this caller has keys for and union the allowed tools.
+	// Get all roles assigned to this caller and order by config order.
 	roles, err := a.store.RolesForCaller(caller.Name)
 	if err != nil {
 		return nil, fmt.Errorf("lookup roles: %w", err)
 	}
-	caller.AllowedTools = a.unionAllowedTools(roles)
+	caller.Roles = a.orderByConfig(roles)
+	caller.AllowedTools = a.unionAllowedTools(caller.Roles)
 
 	return caller, nil
 }
@@ -139,15 +149,34 @@ func (a *Authenticator) unionAllowedTools(roleNames []string) []glob.Glob {
 	return globs
 }
 
-// UpstreamToken returns the bearer token for the given upstream within the
-// specified role. Returns empty string and false if not found.
-func (a *Authenticator) UpstreamToken(role, upstreamName string) (string, bool) {
-	env, ok := a.credentials[role]
-	if !ok {
-		return "", false
+// UpstreamToken returns the bearer token for a given upstream by walking the
+// caller's roles in config order. The first role that has credentials for the
+// upstream wins.
+func (a *Authenticator) UpstreamToken(roles []string, upstreamName string) (string, bool) {
+	for _, role := range roles {
+		if env, ok := a.credentials[role]; ok {
+			if token, ok := env[upstreamName]; ok {
+				return token, true
+			}
+		}
 	}
-	token, ok := env[upstreamName]
-	return token, ok
+	return "", false
+}
+
+// orderByConfig returns the given roles sorted by their order in the config.
+// Roles not present in the config are excluded.
+func (a *Authenticator) orderByConfig(roles []string) []string {
+	roleSet := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		roleSet[r] = true
+	}
+	var ordered []string
+	for _, r := range a.roleOrder {
+		if roleSet[r] {
+			ordered = append(ordered, r)
+		}
+	}
+	return ordered
 }
 
 // Middleware returns HTTP middleware that authenticates requests.

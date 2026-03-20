@@ -1,6 +1,6 @@
 # Task 4: Stdio Transport
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 1 (JSON-RPC codec), Task 2 (transport interface), Task 3 (proxy handler)
 **Needed by:** Task 5 (router)
 

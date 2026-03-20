@@ -18,9 +18,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     caller_id   INTEGER NOT NULL REFERENCES callers(id) ON DELETE CASCADE,
     key_hash    BLOB NOT NULL UNIQUE,
-    role        TEXT NOT NULL,
     label       TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS caller_roles (
+    caller_id  INTEGER NOT NULL REFERENCES callers(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,
+    PRIMARY KEY (caller_id, role)
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
@@ -49,6 +54,17 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("auth: enable foreign keys: %w", err)
 	}
 
+	// Migrate from old schema: if api_keys has a "role" column, drop everything
+	// and recreate. Pre-v1, so destructive migration is acceptable.
+	if needsMigration(db) {
+		for _, table := range []string{"api_keys", "caller_roles", "callers"} {
+			if _, err := db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("auth: drop old %s: %w", table, err)
+			}
+		}
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("auth: run migrations: %w", err)
@@ -58,31 +74,28 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 // LookupByKey finds a caller by the SHA-256 hash of their API key.
-// Returns the caller name and the role from the matched key.
+// Returns the caller name only — roles are resolved separately via RolesForCaller.
 func (s *SQLiteStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
-	var name, role string
+	var name string
 	err := s.db.QueryRow(`
-		SELECT c.name, k.role
+		SELECT c.name
 		FROM api_keys k
 		JOIN callers c ON c.id = k.caller_id
 		WHERE k.key_hash = ?
-	`, hashedKey[:]).Scan(&name, &role)
+	`, hashedKey[:]).Scan(&name)
 	if err != nil {
 		return nil, fmt.Errorf("auth: key not found")
 	}
 
-	return &Caller{
-		Name: name,
-		Role: role,
-	}, nil
+	return &Caller{Name: name}, nil
 }
 
-// RolesForCaller returns all distinct roles assigned to a caller across all their keys.
+// RolesForCaller returns all roles assigned to a caller via the caller_roles table.
 func (s *SQLiteStore) RolesForCaller(name string) ([]string, error) {
 	rows, err := s.db.Query(`
-		SELECT DISTINCT k.role
-		FROM api_keys k
-		JOIN callers c ON c.id = k.caller_id
+		SELECT cr.role
+		FROM caller_roles cr
+		JOIN callers c ON c.id = cr.caller_id
 		WHERE c.name = ?
 	`, name)
 	if err != nil {
@@ -120,19 +133,59 @@ func (s *SQLiteStore) AddCaller(name string) error {
 	return nil
 }
 
-// AddKey inserts an API key hash for a caller with the given role.
-func (s *SQLiteStore) AddKey(callerName string, keyHash [32]byte, role string, label string) error {
+// AddKey inserts an API key hash for a caller.
+func (s *SQLiteStore) AddKey(callerName string, keyHash [32]byte, label string) error {
 	var callerID int64
 	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
 	if err != nil {
 		return fmt.Errorf("auth: caller %q not found", callerName)
 	}
 	_, err = s.db.Exec(
-		"INSERT INTO api_keys (caller_id, key_hash, role, label) VALUES (?, ?, ?, ?)",
-		callerID, keyHash[:], role, label,
+		"INSERT INTO api_keys (caller_id, key_hash, label) VALUES (?, ?, ?)",
+		callerID, keyHash[:], label,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: insert key: %w", err)
+	}
+	return nil
+}
+
+// AssignRole assigns a role to a caller. Idempotent — assigning an
+// already-assigned role is a no-op.
+func (s *SQLiteStore) AssignRole(callerName string, role string) error {
+	var callerID int64
+	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
+	if err != nil {
+		return fmt.Errorf("auth: caller %q not found", callerName)
+	}
+	_, err = s.db.Exec(
+		"INSERT OR IGNORE INTO caller_roles (caller_id, role) VALUES (?, ?)",
+		callerID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: assign role: %w", err)
+	}
+	return nil
+}
+
+// UnassignRole removes a role from a caller. Returns an error if the
+// assignment didn't exist.
+func (s *SQLiteStore) UnassignRole(callerName string, role string) error {
+	var callerID int64
+	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
+	if err != nil {
+		return fmt.Errorf("auth: caller %q not found", callerName)
+	}
+	result, err := s.db.Exec(
+		"DELETE FROM caller_roles WHERE caller_id = ? AND role = ?",
+		callerID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: unassign role: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("auth: caller %q does not have role %q", callerName, role)
 	}
 	return nil
 }
@@ -153,4 +206,16 @@ func (s *SQLiteStore) DeleteCaller(name string) error {
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// needsMigration checks if the database has the old schema (api_keys with a
+// "role" column). Returns true if migration is needed, false for fresh or
+// already-migrated databases.
+func needsMigration(db *sql.DB) bool {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('api_keys')
+		WHERE name = 'role'
+	`).Scan(&count)
+	return err == nil && count > 0
 }

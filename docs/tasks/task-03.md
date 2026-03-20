@@ -1,6 +1,6 @@
 # Task 3: Inbound MCP Server + Proxy Handler
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 1 (JSON-RPC codec), Task 2 (config, transport interface, HTTP transport)
 **Needed by:** Task 4 (stdio transport), Task 5 (router)
 

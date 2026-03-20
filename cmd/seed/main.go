@@ -27,45 +27,42 @@ func main() {
 	}
 	defer store.Close()
 
-	// Create callers (named identities — roles are on keys, not callers).
+	// Create callers.
 	_ = store.AddCaller("alice")
 	_ = store.AddCaller("bob")
 	_ = store.AddCaller("charlie")
 
-	// Alice gets TWO role keys: http-only + stdio-only → union sees all tools.
-	aliceHTTPKey := "sk-" + generateKey()
-	aliceHTTPHash := sha256.Sum256([]byte(aliceHTTPKey))
-	if err := store.AddKey("alice", aliceHTTPHash, "http-only", "alice-http"); err != nil {
+	// Assign roles to callers (roles are on callers, not keys).
+	_ = store.AssignRole("alice", "http-only")
+	_ = store.AssignRole("alice", "stdio-only")
+	_ = store.AssignRole("bob", "full-access")
+	_ = store.AssignRole("charlie", "http-only")
+
+	// One key per caller is sufficient.
+	aliceKey := "sk-" + generateKey()
+	aliceHash := sha256.Sum256([]byte(aliceKey))
+	if err := store.AddKey("alice", aliceHash, "alice-key"); err != nil {
 		log.Fatal(err)
 	}
 
-	aliceStdioKey := "sk-" + generateKey()
-	aliceStdioHash := sha256.Sum256([]byte(aliceStdioKey))
-	if err := store.AddKey("alice", aliceStdioHash, "stdio-only", "alice-stdio"); err != nil {
-		log.Fatal(err)
-	}
-
-	// Bob gets a "full-access" role key.
 	bobKey := "sk-" + generateKey()
 	bobHash := sha256.Sum256([]byte(bobKey))
-	if err := store.AddKey("bob", bobHash, "full-access", "bob-full"); err != nil {
+	if err := store.AddKey("bob", bobHash, "bob-key"); err != nil {
 		log.Fatal(err)
 	}
 
-	// Charlie gets only an "http-only" key → can only see echo + add.
 	charlieKey := "sk-" + generateKey()
 	charlieHash := sha256.Sum256([]byte(charlieKey))
-	if err := store.AddKey("charlie", charlieHash, "http-only", "charlie-http"); err != nil {
+	if err := store.AddKey("charlie", charlieHash, "charlie-key"); err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Printf("Database: %s\n\n", dbPath)
-	fmt.Printf("alice (roles: http-only + stdio-only):\n")
-	fmt.Printf("  http-only key:  %s\n", aliceHTTPKey)
-	fmt.Printf("  stdio-only key: %s\n\n", aliceStdioKey)
-	fmt.Printf("bob (role: full-access):\n")
+	fmt.Printf("alice (roles: http-only, stdio-only):\n")
+	fmt.Printf("  %s\n\n", aliceKey)
+	fmt.Printf("bob (roles: full-access):\n")
 	fmt.Printf("  %s\n\n", bobKey)
-	fmt.Printf("charlie (role: http-only):\n")
+	fmt.Printf("charlie (roles: http-only):\n")
 	fmt.Printf("  %s\n\n", charlieKey)
 	fmt.Println("Use these as: Authorization: Bearer <key>")
 }

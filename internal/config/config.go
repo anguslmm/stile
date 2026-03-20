@@ -137,9 +137,13 @@ type rawRoleConfig struct {
 }
 
 type rawConfig struct {
-	Server    rawServerConfig            `yaml:"server"`
-	Upstreams []rawUpstreamConfig        `yaml:"upstreams"`
-	Roles     map[string]rawRoleConfig   `yaml:"roles"`
+	Server    rawServerConfig          `yaml:"server"`
+	Upstreams []rawUpstreamConfig      `yaml:"upstreams"`
+	Roles     map[string]rawRoleConfig `yaml:"roles"`
+
+	// rolesOrdered preserves YAML key order for roles.
+	// Populated by Load/LoadBytes before convert is called.
+	rolesOrdered []string
 }
 
 type rawServerConfig struct {
@@ -170,13 +174,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: read file: %w", err)
 	}
-
-	var raw rawConfig
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("config: parse YAML: %w", err)
-	}
-
-	return convert(raw)
+	return LoadBytes(data)
 }
 
 // LoadBytes parses and validates config from raw YAML bytes.
@@ -186,7 +184,36 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config: parse YAML: %w", err)
 	}
 
+	// Extract ordered role names from the YAML AST (maps don't preserve order).
+	raw.rolesOrdered = extractRoleOrder(data)
+
 	return convert(raw)
+}
+
+// extractRoleOrder parses the YAML to get role names in document order.
+func extractRoleOrder(data []byte) []string {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "roles" {
+			rolesNode := root.Content[i+1]
+			if rolesNode.Kind != yaml.MappingNode {
+				return nil
+			}
+			var names []string
+			for j := 0; j+1 < len(rolesNode.Content); j += 2 {
+				names = append(names, rolesNode.Content[j].Value)
+			}
+			return names
+		}
+	}
+	return nil
 }
 
 func convert(raw rawConfig) (*Config, error) {
@@ -238,7 +265,12 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.upstreams[i] = u
 	}
 
-	for name, rawRole := range raw.Roles {
+	// Use ordered role names to preserve YAML document order.
+	for _, name := range raw.rolesOrdered {
+		rawRole, ok := raw.Roles[name]
+		if !ok {
+			continue
+		}
 		rc := RoleConfig{
 			name:         name,
 			allowedTools: make([]string, len(rawRole.AllowedTools)),
