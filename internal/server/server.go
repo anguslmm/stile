@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/health"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/proxy"
@@ -19,11 +21,27 @@ import (
 
 const supportedProtocolVersion = "2025-11-25"
 
+// ReloadFunc is called by the /admin/reload endpoint. It loads and applies
+// a new configuration, returning a summary of changes or an error.
+type ReloadFunc func(ctx context.Context) (*ReloadResult, error)
+
+// ReloadResult summarizes what changed during a config reload.
+type ReloadResult struct {
+	Status           string   `json:"status"`
+	UpstreamsAdded   []string `json:"upstreams_added"`
+	UpstreamsRemoved []string `json:"upstreams_removed"`
+	CallersAdded     []string `json:"callers_added,omitempty"`
+	CallersRemoved   []string `json:"callers_removed,omitempty"`
+}
+
 // Server is the inbound MCP HTTP server.
 type Server struct {
 	httpServer *http.Server
 	proxy      *proxy.Handler
 	router     *router.RouteTable
+
+	mu            sync.RWMutex
+	authenticator *auth.Authenticator
 }
 
 // Options configures optional Server behavior.
@@ -32,6 +50,10 @@ type Options struct {
 	Authenticator *auth.Authenticator
 	// AdminAuth, if non-nil, wraps admin endpoints with admin auth middleware.
 	AdminAuth func(http.Handler) http.Handler
+	// HealthChecker, if non-nil, enables /healthz and /readyz endpoints.
+	HealthChecker *health.Checker
+	// ReloadFunc, if non-nil, enables the /admin/reload endpoint.
+	ReloadFunc ReloadFunc
 }
 
 // New creates a Server from config, proxy handler, router, metrics, and options.
@@ -43,7 +65,13 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 
 	var mcpHandler http.Handler = http.HandlerFunc(s.handleMCP)
 	if opts != nil && opts.Authenticator != nil {
-		mcpHandler = opts.Authenticator.Middleware(mcpHandler)
+		s.authenticator = opts.Authenticator
+		mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.mu.RLock()
+			a := s.authenticator
+			s.mu.RUnlock()
+			a.Middleware(http.HandlerFunc(s.handleMCP)).ServeHTTP(w, r)
+		})
 	}
 	mux.Handle("POST /mcp", mcpHandler)
 
@@ -52,6 +80,19 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 		adminHandler = opts.AdminAuth(adminHandler)
 	}
 	mux.Handle("POST /admin/refresh", adminHandler)
+
+	if opts != nil && opts.ReloadFunc != nil {
+		var reloadHandler http.Handler = s.makeReloadHandler(opts.ReloadFunc)
+		if opts.AdminAuth != nil {
+			reloadHandler = opts.AdminAuth(reloadHandler)
+		}
+		mux.Handle("POST /admin/reload", reloadHandler)
+	}
+
+	if opts != nil && opts.HealthChecker != nil {
+		mux.HandleFunc("GET /healthz", opts.HealthChecker.HandleLiveness)
+		mux.HandleFunc("GET /readyz", opts.HealthChecker.HandleReadiness)
+	}
 
 	if m != nil {
 		mux.Handle("GET /metrics", promhttp.Handler())
@@ -63,6 +104,13 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 	}
 
 	return s
+}
+
+// SetAuthenticator atomically swaps the authenticator for config reload.
+func (s *Server) SetAuthenticator(a *auth.Authenticator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authenticator = a
 }
 
 // ListenAndServe starts the HTTP server.
@@ -223,6 +271,23 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
+}
+
+func (s *Server) makeReloadHandler(reload ReloadFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result, err := reload(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "error",
+				"error":  err.Error(),
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
 }
 
 func writeError(w http.ResponseWriter, id jsonrpc.ID, code int, message string) {

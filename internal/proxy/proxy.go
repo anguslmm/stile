@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/anguslmm/stile/internal/audit"
@@ -21,6 +22,7 @@ import (
 // Handler dispatches MCP tool calls to the correct upstream via the router.
 type Handler struct {
 	router      *router.RouteTable
+	mu          sync.RWMutex
 	rateLimiter *policy.RateLimiter
 	metrics     *metrics.Metrics
 	auditStore  audit.Store
@@ -30,6 +32,13 @@ type Handler struct {
 // rateLimiter, m, and auditStore may be nil to disable their respective features.
 func NewHandler(rt *router.RouteTable, rateLimiter *policy.RateLimiter, m *metrics.Metrics, auditStore audit.Store) *Handler {
 	return &Handler{router: rt, rateLimiter: rateLimiter, metrics: m, auditStore: auditStore}
+}
+
+// SetRateLimiter atomically swaps the rate limiter.
+func (h *Handler) SetRateLimiter(rl *policy.RateLimiter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rateLimiter = rl
 }
 
 // HandleToolsList returns the merged tool list from all upstreams,
@@ -92,11 +101,14 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	upstreamName := route.Upstream.Name
 
 	// Rate limit check.
-	if h.rateLimiter != nil {
+	h.mu.RLock()
+	rl := h.rateLimiter
+	h.mu.RUnlock()
+	if rl != nil {
 		if caller != nil {
-			h.rateLimiter.RegisterCaller(caller.Name, caller.Roles)
+			rl.RegisterCaller(caller.Name, caller.Roles)
 		}
-		if ok, denial := h.rateLimiter.Allow(callerName, params.Name, upstreamName); !ok {
+		if ok, denial := rl.Allow(callerName, params.Name, upstreamName); !ok {
 			slog.Debug("rate limit rejected",
 				"caller", callerName,
 				"tool", params.Name,

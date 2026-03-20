@@ -605,3 +605,54 @@ upstreams:
 		t.Fatal("expected error when audit is enabled without database")
 	}
 }
+
+func TestShutdownTimeoutDefault(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().ShutdownTimeout().Seconds() != 30 {
+		t.Errorf("default shutdown_timeout = %v, want 30s", cfg.Server().ShutdownTimeout())
+	}
+}
+
+func TestShutdownTimeoutExplicit(t *testing.T) {
+	yaml := `
+server:
+  shutdown_timeout: 10s
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().ShutdownTimeout().Seconds() != 10 {
+		t.Errorf("shutdown_timeout = %v, want 10s", cfg.Server().ShutdownTimeout())
+	}
+}
+
+func TestShutdownTimeoutInvalid(t *testing.T) {
+	yaml := `
+server:
+  shutdown_timeout: banana
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid shutdown_timeout")
+	}
+}

@@ -285,3 +285,52 @@ func TestSSEReaderMultiLineData(t *testing.T) {
 		t.Errorf("data = %q, want %q", ev.Data, want)
 	}
 }
+
+func TestHTTPTransportHealthTracking(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		// Fail the first 3 requests, then succeed.
+		if requestCount <= 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	upstream := newTestUpstream(t, srv.URL, false)
+	tr, _ := NewHTTPTransport(upstream)
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/method",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	if !tr.Healthy() {
+		t.Fatal("expected healthy initially")
+	}
+
+	// First two failures: still healthy (threshold is 3).
+	tr.RoundTrip(context.Background(), req)
+	tr.RoundTrip(context.Background(), req)
+	if !tr.Healthy() {
+		t.Fatal("expected healthy after 2 failures")
+	}
+
+	// Third failure: now unhealthy.
+	tr.RoundTrip(context.Background(), req)
+	if tr.Healthy() {
+		t.Fatal("expected unhealthy after 3 consecutive failures")
+	}
+
+	// Success resets health.
+	tr.RoundTrip(context.Background(), req)
+	if !tr.Healthy() {
+		t.Fatal("expected healthy after successful request")
+	}
+}

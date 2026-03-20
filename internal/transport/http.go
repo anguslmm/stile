@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -21,13 +22,20 @@ type HTTPTransport struct {
 	url    string
 	token  string
 	client *http.Client
+
+	mu                sync.Mutex
+	consecutiveFails  int
+	failThreshold     int
+	healthy           bool
 }
 
 // NewHTTPTransport creates an HTTPTransport from the given upstream config.
 func NewHTTPTransport(cfg config.UpstreamConfig) (*HTTPTransport, error) {
 	t := &HTTPTransport{
-		url:    cfg.URL(),
-		client: &http.Client{},
+		url:           cfg.URL(),
+		client:        &http.Client{},
+		failThreshold: 3,
+		healthy:       true,
 	}
 
 	if auth := cfg.Auth(); auth != nil && auth.TokenEnv() != "" {
@@ -58,13 +66,17 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 
 	resp, err := t.client.Do(httpReq)
 	if err != nil {
+		t.recordFailure()
 		return nil, fmt.Errorf("transport/http: send request: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
+		t.recordFailure()
 		return nil, fmt.Errorf("transport/http: upstream returned status %d", resp.StatusCode)
 	}
+
+	t.recordSuccess()
 
 	ct := resp.Header.Get("Content-Type")
 
@@ -90,5 +102,25 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 // Close is a no-op for HTTP transport.
 func (t *HTTPTransport) Close() error { return nil }
 
-// Healthy always returns true for now. Real health checks come in Task 9.
-func (t *HTTPTransport) Healthy() bool { return true }
+// Healthy reports whether the upstream is reachable based on recent request outcomes.
+func (t *HTTPTransport) Healthy() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.healthy
+}
+
+func (t *HTTPTransport) recordFailure() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.consecutiveFails++
+	if t.consecutiveFails >= t.failThreshold {
+		t.healthy = false
+	}
+}
+
+func (t *HTTPTransport) recordSuccess() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.consecutiveFails = 0
+	t.healthy = true
+}

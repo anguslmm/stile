@@ -1,6 +1,6 @@
 # Task 9: Health Checks + Graceful Shutdown + Hardening
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 8 (observability — health status feeds metrics)
 **Needed by:** Task 10 (integration tests assume hardened behavior)
 

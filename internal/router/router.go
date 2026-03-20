@@ -241,6 +241,57 @@ func (rt *RouteTable) StartBackgroundRefresh(interval time.Duration) {
 	}()
 }
 
+// AddUpstream adds a new upstream to the route table and refreshes it.
+func (rt *RouteTable) AddUpstream(name string, t transport.Transport, cfg config.UpstreamConfig) {
+	rt.mu.Lock()
+	rt.upstreams = append(rt.upstreams, &Upstream{
+		Name:      name,
+		Transport: t,
+		Config:    cfg,
+	})
+	rt.mu.Unlock()
+
+	rt.RefreshUpstream(context.Background(), name)
+}
+
+// RemoveUpstream removes an upstream by name, closes its transport,
+// and rebuilds the route table.
+func (rt *RouteTable) RemoveUpstream(name string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	for i, u := range rt.upstreams {
+		if u.Name == name {
+			u.Transport.Close()
+			rt.upstreams = append(rt.upstreams[:i], rt.upstreams[i+1:]...)
+			break
+		}
+	}
+	rt.rebuildEntriesLocked()
+}
+
+// Upstreams returns the current list of upstream names.
+func (rt *RouteTable) Upstreams() []string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	names := make([]string, len(rt.upstreams))
+	for i, u := range rt.upstreams {
+		names[i] = u.Name
+	}
+	return names
+}
+
+// UpstreamDetails returns the current upstreams for health checking.
+func (rt *RouteTable) UpstreamDetails() []*Upstream {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	out := make([]*Upstream, len(rt.upstreams))
+	copy(out, rt.upstreams)
+	return out
+}
+
 // Close stops the background refresh goroutine and closes all upstream transports.
 func (rt *RouteTable) Close() {
 	rt.closeOnce.Do(func() {

@@ -505,6 +505,79 @@ func TestRefreshResult(t *testing.T) {
 	}
 }
 
+// Test: AddUpstream adds a new upstream dynamically
+func TestAddUpstream(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"a": mockA},
+		newConfigs("a"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	// Initially only alpha.
+	if _, err := rt.Resolve("beta"); err == nil {
+		t.Fatal("expected beta to not exist yet")
+	}
+
+	// Add a new upstream.
+	mockB := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "beta"}},
+	}
+	cfgs := newConfigs("a", "b")
+	rt.AddUpstream("b", mockB, cfgs[1])
+
+	// beta should now be resolvable.
+	route, err := rt.Resolve("beta")
+	if err != nil {
+		t.Fatalf("expected beta resolvable: %v", err)
+	}
+	if route.Upstream.Name != "b" {
+		t.Errorf("expected beta -> upstream b, got %q", route.Upstream.Name)
+	}
+}
+
+// Test: RemoveUpstream removes an upstream dynamically
+func TestRemoveUpstream(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	mockB := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "beta"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"a": mockA, "b": mockB},
+		newConfigs("a", "b"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	if _, err := rt.Resolve("beta"); err != nil {
+		t.Fatalf("expected beta resolvable: %v", err)
+	}
+
+	rt.RemoveUpstream("b")
+
+	if _, err := rt.Resolve("beta"); err == nil {
+		t.Fatal("expected beta to not be resolvable after removal")
+	}
+
+	names := rt.Upstreams()
+	if len(names) != 1 || names[0] != "a" {
+		t.Errorf("expected [a], got %v", names)
+	}
+}
+
 // Test: RefreshResult JSON marshaling matches admin endpoint format
 func TestRefreshResultJSON(t *testing.T) {
 	mockA := &mockTransport{

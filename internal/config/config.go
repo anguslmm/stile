@@ -102,7 +102,12 @@ func (r RateLimitDefaults) DefaultUpstream() *RateLimit { return r.defaultUpstre
 
 // Server returns the server configuration.
 func (c *Config) Server() ServerConfig {
-	return ServerConfig{address: c.server.address, toolCacheTTL: c.server.toolCacheTTL, dbPath: c.server.dbPath}
+	return ServerConfig{
+		address:         c.server.address,
+		toolCacheTTL:    c.server.toolCacheTTL,
+		dbPath:          c.server.dbPath,
+		shutdownTimeout: c.server.shutdownTimeout,
+	}
 }
 
 // Upstreams returns a copy of the upstream configurations.
@@ -140,9 +145,10 @@ func (c *Config) RateLimitDefaults() RateLimitDefaults {
 
 // ServerConfig provides read-only access to server settings.
 type ServerConfig struct {
-	address      string
-	toolCacheTTL time.Duration
-	dbPath       string
+	address         string
+	toolCacheTTL    time.Duration
+	dbPath          string
+	shutdownTimeout time.Duration
 }
 
 // Address returns the listen address (e.g. ":8080").
@@ -154,6 +160,9 @@ func (s ServerConfig) ToolCacheTTL() time.Duration { return s.toolCacheTTL }
 
 // DBPath returns the path to the SQLite database for caller storage.
 func (s ServerConfig) DBPath() string { return s.dbPath }
+
+// ShutdownTimeout returns the graceful shutdown timeout. Default: 30s.
+func (s ServerConfig) ShutdownTimeout() time.Duration { return s.shutdownTimeout }
 
 // LoggingConfig provides read-only access to logging settings.
 type LoggingConfig struct {
@@ -180,9 +189,10 @@ func (a AuditConfig) Enabled() bool { return a.enabled }
 func (a AuditConfig) Database() string { return a.database }
 
 type serverConfig struct {
-	address      string
-	toolCacheTTL time.Duration
-	dbPath       string
+	address         string
+	toolCacheTTL    time.Duration
+	dbPath          string
+	shutdownTimeout time.Duration
 }
 
 // RoleConfig provides read-only access to a role's settings.
@@ -304,9 +314,10 @@ type rawConfig struct {
 }
 
 type rawServerConfig struct {
-	Address      string `yaml:"address"`
-	ToolCacheTTL string `yaml:"tool_cache_ttl"`
-	DBPath       string `yaml:"db_path"`
+	Address         string `yaml:"address"`
+	ToolCacheTTL    string `yaml:"tool_cache_ttl"`
+	DBPath          string `yaml:"db_path"`
+	ShutdownTimeout string `yaml:"shutdown_timeout"`
 }
 
 type rawUpstreamConfig struct {
@@ -397,6 +408,16 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.server.toolCacheTTL = ttl
 	} else {
 		cfg.server.toolCacheTTL = 5 * time.Minute
+	}
+
+	if raw.Server.ShutdownTimeout != "" {
+		st, err := time.ParseDuration(raw.Server.ShutdownTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid shutdown_timeout %q: %w", raw.Server.ShutdownTimeout, err)
+		}
+		cfg.server.shutdownTimeout = st
+	} else {
+		cfg.server.shutdownTimeout = 30 * time.Second
 	}
 
 	cfg.upstreams = make([]UpstreamConfig, len(raw.Upstreams))
