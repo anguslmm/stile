@@ -24,6 +24,7 @@ This document tracks the status of each implementation task. Agents should read 
 ## Notes
 
 - Tasks should be completed in order — each depends on the ones before it.
+- Also update the task specific document to say "done" once it is complete.
 - After Task 3, you can connect an MCP agent to the gateway and see it proxy to an HTTP upstream.
 - If a task changes something that affects a later task doc, update that doc.
 - The design doc is at [stile-design-doc.md](stile-design-doc.md).

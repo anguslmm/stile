@@ -1,6 +1,6 @@
 # Task 6.3: CLI Caller Management
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 6.2 (caller-role assignment), Task 6 (auth — CallerStore, SQLiteStore)
 **Needed by:** nothing (quality-of-life, replaces ad-hoc seed script)
 
