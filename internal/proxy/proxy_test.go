@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -343,6 +345,213 @@ func TestWriteJSONResponse(t *testing.T) {
 	if got.Error != nil {
 		t.Errorf("unexpected error in response")
 	}
+}
+
+func TestMixedHTTPAndStdioUpstreams(t *testing.T) {
+	// Set up an HTTP upstream (httptest server).
+	httpTools := struct {
+		Tools []transport.ToolSchema `json:"tools"`
+	}{
+		Tools: []transport.ToolSchema{
+			{Name: "http_tool", Description: "served over HTTP"},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req jsonrpc.Request
+		// Parse with raw map to handle sealed ID.
+		var raw map[string]json.RawMessage
+		json.Unmarshal(body, &raw)
+		json.Unmarshal(body, &req)
+
+		w.Header().Set("Content-Type", "application/json")
+
+		switch req.Method {
+		case "tools/list":
+			resp, _ := jsonrpc.NewResponse(req.ID, httpTools)
+			data, _ := json.Marshal(resp)
+			w.Write(data)
+		case "tools/call":
+			resp, _ := jsonrpc.NewResponse(req.ID, map[string]any{"from": "http"})
+			data, _ := json.Marshal(resp)
+			w.Write(data)
+		}
+	}))
+	defer srv.Close()
+
+	// Set up a stdio upstream (mock server).
+	binary := buildMockStdioServer(t)
+
+	// Config with both upstreams.
+	yamlCfg := fmt.Sprintf(`
+upstreams:
+  - name: http-upstream
+    transport: streamable-http
+    url: %s
+  - name: stdio-upstream
+    transport: stdio
+    command: ["%s"]
+`, srv.URL, binary)
+
+	cfg, err := config.LoadBytes([]byte(yamlCfg))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	h, err := NewHandler(cfg)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	defer h.Close()
+
+	// tools/list should return tools from both upstreams.
+	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
+	if err != nil {
+		t.Fatalf("HandleToolsList: %v", err)
+	}
+
+	var result struct {
+		Tools []transport.ToolSchema `json:"tools"`
+	}
+	json.Unmarshal(resp.Result, &result)
+
+	names := make(map[string]bool)
+	for _, tool := range result.Tools {
+		names[tool.Name] = true
+	}
+
+	if !names["http_tool"] {
+		t.Error("missing http_tool in merged tool list")
+	}
+	if !names["test_echo"] {
+		t.Error("missing test_echo (stdio) in merged tool list")
+	}
+
+	// tools/call to http_tool should route to HTTP upstream.
+	params, _ := json.Marshal(map[string]any{"name": "http_tool"})
+	callReq := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(2),
+	}
+
+	w := httptest.NewRecorder()
+	h.HandleToolsCall(context.Background(), w, callReq)
+
+	var callResp jsonrpc.Response
+	json.Unmarshal(w.Body.Bytes(), &callResp)
+	if callResp.Error != nil {
+		t.Fatalf("http_tool call error: %v", callResp.Error)
+	}
+
+	var httpResult map[string]any
+	json.Unmarshal(callResp.Result, &httpResult)
+	if httpResult["from"] != "http" {
+		t.Errorf("expected from=http, got %v", httpResult["from"])
+	}
+
+	// tools/call to test_echo should route to stdio upstream.
+	params, _ = json.Marshal(map[string]any{
+		"name":      "test_echo",
+		"arguments": map[string]string{"message": "hi"},
+	})
+	callReq = &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(3),
+	}
+
+	w = httptest.NewRecorder()
+	h.HandleToolsCall(context.Background(), w, callReq)
+
+	json.Unmarshal(w.Body.Bytes(), &callResp)
+	if callResp.Error != nil {
+		t.Fatalf("test_echo call error: %v", callResp.Error)
+	}
+	if callResp.Result == nil {
+		t.Fatal("expected non-nil result from stdio tool call")
+	}
+}
+
+// buildMockStdioServer compiles the mock stdio server for proxy tests.
+func buildMockStdioServer(t *testing.T) string {
+	t.Helper()
+	binary := t.TempDir() + "/mock_stdio_server"
+	cmd := exec.Command("go", "build", "-o", binary,
+		"./testdata_proxy_mock_stdio_server.go")
+	cmd.Dir = t.TempDir()
+
+	// Write a small mock server inline for proxy tests.
+	mockSrc := `package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+)
+
+type request struct {
+	JSONRPC string          ` + "`json:\"jsonrpc\"`" + `
+	Method  string          ` + "`json:\"method\"`" + `
+	Params  json.RawMessage ` + "`json:\"params,omitempty\"`" + `
+	ID      json.RawMessage ` + "`json:\"id\"`" + `
+}
+
+type response struct {
+	JSONRPC string          ` + "`json:\"jsonrpc\"`" + `
+	Result  interface{}     ` + "`json:\"result,omitempty\"`" + `
+	Error   *rpcError       ` + "`json:\"error,omitempty\"`" + `
+	ID      json.RawMessage ` + "`json:\"id\"`" + `
+}
+
+type rpcError struct {
+	Code    int    ` + "`json:\"code\"`" + `
+	Message string ` + "`json:\"message\"`" + `
+}
+
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	encoder := json.NewEncoder(os.Stdout)
+
+	for scanner.Scan() {
+		var req request
+		json.Unmarshal(scanner.Bytes(), &req)
+
+		resp := response{JSONRPC: "2.0", ID: req.ID}
+		switch req.Method {
+		case "tools/list":
+			resp.Result = map[string]interface{}{
+				"tools": []map[string]string{
+					{"name": "test_echo", "description": "echo tool"},
+				},
+			}
+		case "tools/call":
+			var params map[string]interface{}
+			json.Unmarshal(req.Params, &params)
+			resp.Result = map[string]interface{}{
+				"content": []map[string]interface{}{
+					{"type": "text", "text": "echoed"},
+				},
+			}
+		default:
+			resp.Error = &rpcError{Code: -32601, Message: "not found"}
+		}
+		encoder.Encode(resp)
+	}
+}
+`
+	srcPath := cmd.Dir + "/testdata_proxy_mock_stdio_server.go"
+	os.WriteFile(srcPath, []byte(mockSrc), 0644)
+	cmd = exec.Command("go", "build", "-o", binary, srcPath)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to build mock stdio server: %v", err)
+	}
+	return binary
 }
 
 // suppress log output during tests

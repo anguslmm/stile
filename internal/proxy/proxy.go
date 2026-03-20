@@ -79,6 +79,8 @@ func defaultTransportFactory(cfg config.UpstreamConfig) (transport.Transport, er
 	switch cfg.Transport() {
 	case "streamable-http":
 		return transport.NewHTTPTransport(cfg)
+	case "stdio":
+		return transport.NewStdioTransport(cfg)
 	default:
 		return nil, fmt.Errorf("unsupported transport type %q", cfg.Transport())
 	}

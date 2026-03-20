@@ -1,0 +1,7 @@
+server:
+  address: ":8080"
+
+upstreams:
+  - name: local-echo
+    transport: stdio
+    command: ["go", "run", "./internal/transport/testdata/mock_stdio_server.go"]
