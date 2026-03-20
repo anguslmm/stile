@@ -58,14 +58,15 @@ func newTestServer(t *testing.T, mock *mockTransport) *httptest.Server {
 	rt, err := router.New(
 		map[string]transport.Transport{"test": mock},
 		cfg.Upstreams(),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { rt.Close() })
 
-	h := proxy.NewHandler(rt, nil)
-	srv := New(cfg, h, rt, nil)
+	h := proxy.NewHandler(rt, nil, nil, nil)
+	srv := New(cfg, h, rt, nil, nil)
 	return httptest.NewServer(srv.Handler())
 }
 

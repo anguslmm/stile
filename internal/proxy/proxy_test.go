@@ -67,7 +67,7 @@ func newTestConfig(names ...string) *config.Config {
 func newTestRouter(t *testing.T, names []string, transports map[string]transport.Transport) *router.RouteTable {
 	t.Helper()
 	cfg := newTestConfig(names...)
-	rt, err := router.New(transports, cfg.Upstreams())
+	rt, err := router.New(transports, cfg.Upstreams(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestToolsListMergesUpstreams(t *testing.T) {
 	})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	if err != nil {
@@ -144,7 +144,7 @@ func TestToolsCallDispatchesCorrectly(t *testing.T) {
 	})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	params, _ := json.Marshal(map[string]any{"name": "beta", "arguments": map[string]any{}})
 	req := &jsonrpc.Request{
@@ -176,7 +176,7 @@ func TestToolsCallUnknownTool(t *testing.T) {
 	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	params, _ := json.Marshal(map[string]any{"name": "nonexistent"})
 	req := &jsonrpc.Request{
@@ -214,7 +214,7 @@ func TestUpstreamDownAtStartup(t *testing.T) {
 	})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	if err != nil {
@@ -247,7 +247,7 @@ func TestToolsCallSSEPassthrough(t *testing.T) {
 	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	params, _ := json.Marshal(map[string]any{"name": "streamy"})
 	req := &jsonrpc.Request{
@@ -283,7 +283,7 @@ func TestToolsCallWritesDirectResponse(t *testing.T) {
 	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	params, _ := json.Marshal(map[string]any{"name": "direct"})
 	req := &jsonrpc.Request{
@@ -396,13 +396,13 @@ upstreams:
 		transports[ucfg.Name()] = tr
 	}
 
-	rt, err := router.New(transports, cfg.Upstreams())
+	rt, err := router.New(transports, cfg.Upstreams(), nil)
 	if err != nil {
 		t.Fatalf("New router: %v", err)
 	}
 	defer rt.Close()
 
-	h := NewHandler(rt, nil)
+	h := NewHandler(rt, nil, nil, nil)
 
 	// tools/list should return tools from both upstreams.
 	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))

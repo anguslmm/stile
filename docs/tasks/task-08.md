@@ -1,6 +1,6 @@
 # Task 8: Observability
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 7 (rate limiting — rejection metrics), Task 5 (router — cache refresh metrics)
 **Needed by:** Task 9 (health checks complement observability)
 
@@ -118,46 +118,72 @@ The proxy handler calls `metrics.RequestsTotal.WithLabelValues(caller, tool, ups
 
 ### Optional append-only log of all tool calls
 
-For compliance and debugging. Records the full request and response status as JSONL (one JSON object per line).
+For compliance and debugging. Stored in a SQLite database (reusing the existing `modernc.org/sqlite` dependency) behind a `Store` interface so the backend can be swapped later (e.g. Postgres).
+
+### Package: `internal/audit`
 
 ### Config
 
 ```yaml
 audit:
   enabled: false
-  output: stdout          # "stdout" or a file path like "/var/log/stile/audit.jsonl"
+  database: /var/lib/stile/audit.db   # SQLite database path
 ```
 
-### Audit entry
-
-```json
-{
-  "timestamp": "2026-03-17T10:30:00Z",
-  "caller": "claude-code-dev",
-  "method": "tools/call",
-  "tool": "github/create_pull_request",
-  "upstream": "github",
-  "params": { ... },
-  "status": "ok",
-  "latency_ms": 230
-}
-```
-
-### Implementation
+### Store interface
 
 ```go
-type AuditWriter struct {
-    encoder *json.Encoder
-    mu      sync.Mutex
+type Entry struct {
+    Timestamp  time.Time
+    Caller     string
+    Method     string
+    Tool       string
+    Upstream   string
+    Params     json.RawMessage
+    Status     string
+    LatencyMS  int64
 }
 
-func NewAuditWriter(cfg config.AuditConfig) (*AuditWriter, error)
-func (w *AuditWriter) Log(entry AuditEntry)
+type Store interface {
+    Log(ctx context.Context, entry Entry) error
+    Close() error
+}
 ```
 
-The audit writer is called by the proxy handler after each request completes. If audit is disabled, the writer is nil and the proxy handler skips the call.
+The interface is write-only for now. Query/search methods can be added later.
 
-Use a mutex to serialize writes. Writing should not block the request — if performance is a concern, buffer with a channel, but for v0.1 synchronous writes are fine.
+### SQLite implementation
+
+```go
+type SQLiteStore struct {
+    db *sql.DB
+}
+
+func NewSQLiteStore(dbPath string) (*SQLiteStore, error)
+func (s *SQLiteStore) Log(ctx context.Context, entry Entry) error
+func (s *SQLiteStore) Close() error
+```
+
+Schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp  DATETIME NOT NULL,
+    caller     TEXT NOT NULL,
+    method     TEXT NOT NULL,
+    tool       TEXT,
+    upstream   TEXT,
+    params     TEXT,
+    status     TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_log_caller ON audit_log(caller);
+```
+
+The store is called by the proxy handler after each request completes. If audit is disabled, the store is nil and the proxy handler skips the call. Writes are synchronous for v0.1.
 
 ---
 
@@ -172,7 +198,7 @@ logging:
 
 audit:
   enabled: false
-  output: stdout
+  database: /var/lib/stile/audit.db
 ```
 
 Add the corresponding config types with the same unexported-fields-and-getters pattern.
@@ -196,9 +222,9 @@ Add the corresponding config types with the same unexported-fields-and-getters p
 
 ### Audit log tests
 
-8. **Audit entry written:** enable audit to a buffer, process a request → JSONL entry with correct fields
-9. **Audit disabled:** audit disabled in config → no output
-10. **Audit to file:** configure file output → file contains JSONL entries
+8. **Audit entry written:** create SQLiteStore with in-memory DB, call Log → row exists with correct fields
+9. **Audit disabled:** audit disabled in config → store is nil, proxy skips audit
+10. **Store interface:** SQLiteStore satisfies Store interface (compile-time check)
 
 ### Build check
 

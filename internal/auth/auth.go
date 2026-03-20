@@ -6,7 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -76,7 +76,7 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 		for upstream, envVar := range role.Credentials() {
 			val := os.Getenv(envVar)
 			if val == "" {
-				log.Printf("auth: warning: env var %s not set for role %q upstream %q", envVar, role.Name(), upstream)
+				slog.Warn("env var not set", "env_var", envVar, "role", role.Name(), "upstream", upstream)
 				continue
 			}
 			tokens[upstream] = val

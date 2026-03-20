@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
 )
@@ -31,8 +34,9 @@ type Options struct {
 	AdminAuth func(http.Handler) http.Handler
 }
 
-// New creates a Server from config, proxy handler, router, and options.
-func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, opts *Options) *Server {
+// New creates a Server from config, proxy handler, router, metrics, and options.
+// m may be nil to disable the /metrics endpoint.
+func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics.Metrics, opts *Options) *Server {
 	s := &Server{proxy: p, router: rt}
 
 	mux := http.NewServeMux()
@@ -48,6 +52,10 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, opts *Opti
 		adminHandler = opts.AdminAuth(adminHandler)
 	}
 	mux.Handle("POST /admin/refresh", adminHandler)
+
+	if m != nil {
+		mux.Handle("GET /metrics", promhttp.Handler())
+	}
 
 	s.httpServer = &http.Server{
 		Addr:    cfg.Server().Address(),

@@ -60,10 +60,22 @@ func ParseRateLimit(s string) (RateLimit, error) {
 
 // Config is immutable after construction via Load.
 type Config struct {
-	server          serverConfig
-	upstreams       []UpstreamConfig
-	roles           []RoleConfig
+	server            serverConfig
+	upstreams         []UpstreamConfig
+	roles             []RoleConfig
 	rateLimitDefaults rateLimitDefaults
+	logging           loggingConfig
+	audit             auditConfig
+}
+
+type loggingConfig struct {
+	level  string
+	format string
+}
+
+type auditConfig struct {
+	enabled  bool
+	database string
 }
 
 type rateLimitDefaults struct {
@@ -107,6 +119,16 @@ func (c *Config) Roles() []RoleConfig {
 	return out
 }
 
+// Logging returns the logging configuration.
+func (c *Config) Logging() LoggingConfig {
+	return LoggingConfig{level: c.logging.level, format: c.logging.format}
+}
+
+// Audit returns the audit configuration.
+func (c *Config) Audit() AuditConfig {
+	return AuditConfig{enabled: c.audit.enabled, database: c.audit.database}
+}
+
 // RateLimitDefaults returns the global rate limit defaults.
 func (c *Config) RateLimitDefaults() RateLimitDefaults {
 	return RateLimitDefaults{
@@ -132,6 +154,30 @@ func (s ServerConfig) ToolCacheTTL() time.Duration { return s.toolCacheTTL }
 
 // DBPath returns the path to the SQLite database for caller storage.
 func (s ServerConfig) DBPath() string { return s.dbPath }
+
+// LoggingConfig provides read-only access to logging settings.
+type LoggingConfig struct {
+	level  string
+	format string
+}
+
+// Level returns the log level (debug, info, warn, error). Default: "info".
+func (l LoggingConfig) Level() string { return l.level }
+
+// Format returns the log format (json or text). Default: "json".
+func (l LoggingConfig) Format() string { return l.format }
+
+// AuditConfig provides read-only access to audit settings.
+type AuditConfig struct {
+	enabled  bool
+	database string
+}
+
+// Enabled returns whether audit logging is enabled.
+func (a AuditConfig) Enabled() bool { return a.enabled }
+
+// Database returns the path to the audit SQLite database.
+func (a AuditConfig) Database() string { return a.database }
 
 type serverConfig struct {
 	address      string
@@ -234,11 +280,23 @@ type rawRateLimitDefaults struct {
 	DefaultUpstream string `yaml:"default_upstream"`
 }
 
+type rawLoggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
+}
+
+type rawAuditConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Database string `yaml:"database"`
+}
+
 type rawConfig struct {
 	Server     rawServerConfig          `yaml:"server"`
 	Upstreams  []rawUpstreamConfig      `yaml:"upstreams"`
 	Roles      map[string]rawRoleConfig `yaml:"roles"`
 	RateLimits *rawRateLimitDefaults    `yaml:"rate_limits"`
+	Logging    *rawLoggingConfig        `yaml:"logging"`
+	Audit      *rawAuditConfig          `yaml:"audit"`
 
 	// rolesOrdered preserves YAML key order for roles.
 	// Populated by Load/LoadBytes before convert is called.
@@ -404,6 +462,24 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.roles = append(cfg.roles, rc)
 	}
 
+	// Parse logging config with defaults.
+	cfg.logging.level = "info"
+	cfg.logging.format = "json"
+	if raw.Logging != nil {
+		if raw.Logging.Level != "" {
+			cfg.logging.level = raw.Logging.Level
+		}
+		if raw.Logging.Format != "" {
+			cfg.logging.format = raw.Logging.Format
+		}
+	}
+
+	// Parse audit config.
+	if raw.Audit != nil {
+		cfg.audit.enabled = raw.Audit.Enabled
+		cfg.audit.database = raw.Audit.Database
+	}
+
 	// Parse global rate limit defaults.
 	if raw.RateLimits != nil {
 		if raw.RateLimits.DefaultCaller != "" {
@@ -459,6 +535,23 @@ func validate(raw rawConfig) error {
 		default:
 			return fmt.Errorf("config: upstream %q: transport must be \"streamable-http\" or \"stdio\", got %q", u.Name, u.Transport)
 		}
+	}
+
+	if raw.Logging != nil {
+		switch raw.Logging.Level {
+		case "", "debug", "info", "warn", "error":
+		default:
+			return fmt.Errorf("config: logging.level must be debug, info, warn, or error, got %q", raw.Logging.Level)
+		}
+		switch raw.Logging.Format {
+		case "", "json", "text":
+		default:
+			return fmt.Errorf("config: logging.format must be json or text, got %q", raw.Logging.Format)
+		}
+	}
+
+	if raw.Audit != nil && raw.Audit.Enabled && raw.Audit.Database == "" {
+		return fmt.Errorf("config: audit.database is required when audit is enabled")
 	}
 
 	for roleName, role := range raw.Roles {

@@ -130,6 +130,7 @@ func TestInitialDiscovery(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
 		newConfigs("a", "b"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +174,7 @@ func TestListToolsMerges(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
 		newConfigs("a", "b"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +206,7 @@ func TestResolveUnknownTool(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mock},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +228,7 @@ func TestRefreshUpdatesTools(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mock},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +263,7 @@ func TestStaleUpstreamKeepsTools(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": ct},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +300,7 @@ func TestUpstreamRecovery(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": ct},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +340,7 @@ func TestDuplicateToolName(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
 		newConfigs("a", "b"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +370,7 @@ func TestBackgroundRefresh(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mock},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -408,6 +416,7 @@ func TestRefreshUpstream(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
 		newConfigs("a", "b"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -441,6 +450,7 @@ func TestRefreshUpstreamUnknown(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mock},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -465,6 +475,7 @@ func TestRefreshResult(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
 		newConfigs("a", "b"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -503,6 +514,7 @@ func TestRefreshResultJSON(t *testing.T) {
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA},
 		newConfigs("a"),
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

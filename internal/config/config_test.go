@@ -476,3 +476,132 @@ upstreams:
 		t.Errorf("db_path = %q, want /data/stile.db", cfg.Server().DBPath())
 	}
 }
+
+func TestLoggingConfigDefaults(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Logging().Level() != "info" {
+		t.Errorf("logging level = %q, want info", cfg.Logging().Level())
+	}
+	if cfg.Logging().Format() != "json" {
+		t.Errorf("logging format = %q, want json", cfg.Logging().Format())
+	}
+}
+
+func TestLoggingConfigExplicit(t *testing.T) {
+	yaml := `
+logging:
+  level: debug
+  format: text
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Logging().Level() != "debug" {
+		t.Errorf("logging level = %q, want debug", cfg.Logging().Level())
+	}
+	if cfg.Logging().Format() != "text" {
+		t.Errorf("logging format = %q, want text", cfg.Logging().Format())
+	}
+}
+
+func TestLoggingInvalidLevel(t *testing.T) {
+	yaml := `
+logging:
+  level: trace
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid logging level")
+	}
+}
+
+func TestLoggingInvalidFormat(t *testing.T) {
+	yaml := `
+logging:
+  format: xml
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid logging format")
+	}
+}
+
+func TestAuditConfigLoads(t *testing.T) {
+	yaml := `
+audit:
+  enabled: true
+  database: /var/lib/stile/audit.db
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Audit().Enabled() {
+		t.Error("audit.enabled should be true")
+	}
+	if cfg.Audit().Database() != "/var/lib/stile/audit.db" {
+		t.Errorf("audit.database = %q, want /var/lib/stile/audit.db", cfg.Audit().Database())
+	}
+}
+
+func TestAuditDisabledByDefault(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Audit().Enabled() {
+		t.Error("audit should be disabled by default")
+	}
+}
+
+func TestAuditEnabledWithoutDatabase(t *testing.T) {
+	yaml := `
+audit:
+  enabled: true
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when audit is enabled without database")
+	}
+}

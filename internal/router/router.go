@@ -6,12 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
@@ -48,6 +49,7 @@ type RouteTable struct {
 	mu        sync.RWMutex
 	entries   map[string]*Route // tool name → route
 	upstreams []*Upstream
+	metrics   *metrics.Metrics
 
 	stopCh    chan struct{}
 	done      chan struct{}
@@ -57,9 +59,11 @@ type RouteTable struct {
 // New creates a RouteTable, builds the upstream list from transports and configs,
 // and runs an initial Refresh. Individual upstream failures during initial refresh
 // are non-fatal — the upstream is marked stale and its tools remain empty.
-func New(transports map[string]transport.Transport, configs []config.UpstreamConfig) (*RouteTable, error) {
+// m may be nil to disable metrics.
+func New(transports map[string]transport.Transport, configs []config.UpstreamConfig, m *metrics.Metrics) (*RouteTable, error) {
 	rt := &RouteTable{
 		entries: make(map[string]*Route),
+		metrics: m,
 		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -68,7 +72,7 @@ func New(transports map[string]transport.Transport, configs []config.UpstreamCon
 	for _, cfg := range configs {
 		t, ok := transports[cfg.Name()]
 		if !ok {
-			log.Printf("router: no transport for upstream %q, skipping", cfg.Name())
+			slog.Warn("no transport for upstream, skipping", "upstream", cfg.Name())
 			continue
 		}
 		rt.upstreams = append(rt.upstreams, &Upstream{
@@ -119,8 +123,24 @@ func (rt *RouteTable) Refresh(ctx context.Context) *RefreshResult {
 
 	results := make([]discovered, len(rt.upstreams))
 	for i, u := range rt.upstreams {
+		start := time.Now()
 		tools, err := discoverTools(ctx, u.Transport)
+		duration := time.Since(start)
 		results[i] = discovered{upstream: u, tools: tools, err: err}
+
+		status := "success"
+		if err != nil {
+			status = "failure"
+		}
+		if rt.metrics != nil {
+			rt.metrics.ToolCacheRefresh.WithLabelValues(u.Name, status).Inc()
+		}
+		slog.Info("tool cache refresh",
+			"upstream", u.Name,
+			"status", status,
+			"tools", len(tools),
+			"duration_ms", duration.Milliseconds(),
+		)
 	}
 
 	rt.mu.Lock()
@@ -128,7 +148,7 @@ func (rt *RouteTable) Refresh(ctx context.Context) *RefreshResult {
 
 	for _, d := range results {
 		if d.err != nil {
-			log.Printf("router: refresh upstream %q: %v", d.upstream.Name, d.err)
+			slog.Warn("refresh upstream failed", "upstream", d.upstream.Name, "error", d.err)
 			d.upstream.Stale = true
 		} else {
 			d.upstream.Tools = d.tools
@@ -190,7 +210,7 @@ func (rt *RouteTable) rebuildEntriesLocked() {
 	for _, u := range rt.upstreams {
 		for _, tool := range u.Tools {
 			if _, exists := rt.entries[tool.Name]; exists {
-				log.Printf("router: duplicate tool %q from upstream %q, keeping first", tool.Name, u.Name)
+				slog.Warn("duplicate tool, keeping first", "tool", tool.Name, "upstream", u.Name)
 				continue
 			}
 			rt.entries[tool.Name] = &Route{

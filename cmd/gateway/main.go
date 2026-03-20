@@ -5,14 +5,16 @@ import (
 	"crypto/sha256"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/anguslmm/stile/internal/audit"
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
@@ -52,17 +54,29 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config failed", "error", err)
+		os.Exit(1)
 	}
+
+	setupLogger(cfg)
+
+	slog.Info("config loaded",
+		"upstreams", len(cfg.Upstreams()),
+		"roles", len(cfg.Roles()),
+	)
+
+	m := metrics.New()
 
 	transports, err := buildTransports(cfg)
 	if err != nil {
-		log.Fatalf("create transports: %v", err)
+		slog.Error("create transports failed", "error", err)
+		os.Exit(1)
 	}
 
-	rt, err := router.New(transports, cfg.Upstreams())
+	rt, err := router.New(transports, cfg.Upstreams(), m)
 	if err != nil {
-		log.Fatalf("create router: %v", err)
+		slog.Error("create router failed", "error", err)
+		os.Exit(1)
 	}
 
 	if ttl := cfg.Server().ToolCacheTTL(); ttl > 0 {
@@ -72,9 +86,20 @@ func main() {
 
 	opts := buildAuthOpts(cfg)
 
+	var auditStore audit.Store
+	if cfg.Audit().Enabled() {
+		auditStore, err = audit.NewSQLiteStore(cfg.Audit().Database())
+		if err != nil {
+			slog.Error("open audit database failed", "error", err)
+			os.Exit(1)
+		}
+		defer auditStore.Close()
+		slog.Info("audit logging enabled", "database", cfg.Audit().Database())
+	}
+
 	rateLimiter := policy.NewRateLimiter(cfg)
-	handler := proxy.NewHandler(rt, rateLimiter)
-	srv := server.New(cfg, handler, rt, opts)
+	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore)
+	srv := server.New(cfg, handler, rt, m, opts)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -82,18 +107,41 @@ func main() {
 
 	go func() {
 		<-sigCh
-		log.Println("shutting down...")
+		slog.Info("shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("shutdown error: %v", err)
+			slog.Error("shutdown error", "error", err)
 		}
 	}()
 
-	log.Printf("stile listening on %s", cfg.Server().Address())
+	slog.Info("stile listening", "address", cfg.Server().Address())
 	if err := srv.ListenAndServe(); err != nil {
-		log.Printf("server stopped: %v", err)
+		slog.Info("server stopped", "error", err)
 	}
+}
+
+func setupLogger(cfg *config.Config) {
+	var level slog.Level
+	switch cfg.Logging().Level() {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if cfg.Logging().Format() == "text" {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(handler))
 }
 
 func buildAuthOpts(cfg *config.Config) *server.Options {
@@ -104,7 +152,8 @@ func buildAuthOpts(cfg *config.Config) *server.Options {
 
 	store, err := auth.NewSQLiteStore(dbPath)
 	if err != nil {
-		log.Fatalf("open caller database: %v", err)
+		slog.Error("open caller database failed", "error", err)
+		os.Exit(1)
 	}
 
 	authenticator := auth.NewAuthenticator(store, cfg.Roles())
@@ -140,7 +189,7 @@ func buildTransports(cfg *config.Config) (map[string]transport.Transport, error)
 			err = fmt.Errorf("unsupported transport type %q", ucfg.Transport())
 		}
 		if err != nil {
-			log.Printf("skip upstream %q: %v", ucfg.Name(), err)
+			slog.Warn("skip upstream", "upstream", ucfg.Name(), "error", err)
 			continue
 		}
 		transports[ucfg.Name()] = t
