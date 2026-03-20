@@ -1,6 +1,6 @@
 # Task 9.1: Cleanup — main.go and wiring layer
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 9 (health checks, graceful shutdown, config reload)
 **Needed by:** Task 10 (cleaner foundation for further work)
 

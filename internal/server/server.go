@@ -70,7 +70,18 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 			s.mu.RLock()
 			a := s.authenticator
 			s.mu.RUnlock()
-			a.Middleware(http.HandlerFunc(s.handleMCP)).ServeHTTP(w, r)
+			caller, err := a.Authenticate(r)
+			if err != nil {
+				resp := jsonrpc.NewErrorResponse(nil, -32000, "unauthorized")
+				data, _ := json.Marshal(resp)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(data)
+				return
+			}
+			if caller != nil {
+				r = r.WithContext(auth.ContextWithCaller(r.Context(), caller))
+			}
+			s.handleMCP(w, r)
 		})
 	}
 	mux.Handle("POST /mcp", mcpHandler)

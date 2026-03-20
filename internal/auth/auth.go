@@ -42,7 +42,8 @@ func CallerFromContext(ctx context.Context) *Caller {
 	return c
 }
 
-func contextWithCaller(ctx context.Context, c *Caller) context.Context {
+// ContextWithCaller returns a new context with the given Caller attached.
+func ContextWithCaller(ctx context.Context, c *Caller) context.Context {
 	return context.WithValue(ctx, contextKey{}, c)
 }
 
@@ -188,7 +189,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		if caller != nil {
-			r = r.WithContext(contextWithCaller(r.Context(), caller))
+			r = r.WithContext(ContextWithCaller(r.Context(), caller))
 		}
 		next.ServeHTTP(w, r)
 	})

@@ -18,7 +18,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 7 | Rate limiting | [task-07.md](tasks/task-07.md) | done |
 | 8 | Observability | [task-08.md](tasks/task-08.md) | done |
 | 9 | Health checks + graceful shutdown + hardening | [task-09.md](tasks/task-09.md) | done |
-| 9.1 | Cleanup — main.go and wiring layer | [task-09.1.md](tasks/task-09.1.md) | not started |
+| 9.1 | Cleanup — main.go and wiring layer | [task-09.1.md](tasks/task-09.1.md) | done |
 | 10 | Admin API for caller management | [task-10.md](tasks/task-10.md) | not started |
 | 11 | Integration tests + release packaging | [task-11.md](tasks/task-11.md) | not started |
 

@@ -1020,7 +1020,7 @@ func TestCallerFromContextNil(t *testing.T) {
 
 func TestCallerFromContextSet(t *testing.T) {
 	caller := &Caller{Name: "test"}
-	ctx := contextWithCaller(context.Background(), caller)
+	ctx := ContextWithCaller(context.Background(), caller)
 	got := CallerFromContext(ctx)
 	if got == nil || got.Name != "test" {
 		t.Error("expected caller from context")

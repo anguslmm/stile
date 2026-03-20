@@ -68,7 +68,7 @@ func main() {
 
 	m := metrics.New()
 
-	transports, err := buildTransports(cfg)
+	transports, err := buildTransports(cfg, nil)
 	if err != nil {
 		slog.Error("create transports failed", "error", err)
 		os.Exit(1)
@@ -100,32 +100,109 @@ func main() {
 	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore)
 
 	// Build health checker from router upstreams.
-	upstreamDetails := rt.UpstreamDetails()
-	upstreamInfos := make([]health.UpstreamInfo, len(upstreamDetails))
-	for i, u := range upstreamDetails {
-		upstreamInfos[i] = health.UpstreamInfo{
-			Name:      u.Name,
-			Transport: u.Transport,
-			Tools:     func() int { return len(u.Tools) },
-			Stale:     func() bool { return u.Stale },
-		}
-	}
-	healthChecker := health.NewChecker(upstreamInfos, m)
+	healthChecker := buildHealthChecker(rt, m)
 	healthChecker.Start()
 
-	// Build reload function.
+	// Build reload closure — captures everything it needs.
 	var reloadMu sync.Mutex
-	reloadFunc := func(ctx context.Context) (*server.ReloadResult, error) {
+	reload := func(ctx context.Context) (*server.ReloadResult, error) {
 		reloadMu.Lock()
 		defer reloadMu.Unlock()
-		return reload(ctx, *configPath, cfg, rt, handler, opts, m, healthChecker)
+
+		newCfg, err := config.Load(*configPath)
+		if err != nil {
+			return nil, fmt.Errorf("load config: %w", err)
+		}
+
+		// Diff upstreams against the router's current list (not the original config,
+		// which may be stale after prior reloads).
+		oldUpstreams := make(map[string]bool)
+		for _, name := range rt.Upstreams() {
+			oldUpstreams[name] = true
+		}
+		newUpstreams := make(map[string]bool)
+		for _, u := range newCfg.Upstreams() {
+			newUpstreams[u.Name()] = true
+		}
+
+		var added, removed []string
+		for name := range newUpstreams {
+			if !oldUpstreams[name] {
+				added = append(added, name)
+			}
+		}
+		for name := range oldUpstreams {
+			if !newUpstreams[name] {
+				removed = append(removed, name)
+			}
+		}
+
+		// Create transports for added upstreams.
+		filter := make(map[string]bool, len(added))
+		for _, n := range added {
+			filter[n] = true
+		}
+		newTransports, err := buildTransports(newCfg, filter)
+		if err != nil {
+			return nil, fmt.Errorf("create transports for new upstreams: %w", err)
+		}
+
+		// Apply changes atomically (at this point, all prep has succeeded).
+
+		// Remove old upstreams from router.
+		for _, name := range removed {
+			rt.RemoveUpstream(name)
+		}
+
+		// Add new upstreams to router.
+		for _, ucfg := range newCfg.Upstreams() {
+			if t, ok := newTransports[ucfg.Name()]; ok {
+				rt.AddUpstream(ucfg.Name(), t, ucfg)
+			}
+		}
+
+		// Update rate limiter.
+		handler.SetRateLimiter(policy.NewRateLimiter(newCfg))
+
+		// Update authenticator if auth is configured.
+		if opts != nil && opts.Authenticator != nil {
+			dbPath := newCfg.Server().DBPath()
+			if dbPath != "" {
+				store, err := auth.NewSQLiteStore(dbPath)
+				if err != nil {
+					slog.Error("reload: failed to open caller database", "error", err)
+				} else {
+					newAuth := auth.NewAuthenticator(store, newCfg.Roles())
+					opts.Authenticator = newAuth
+				}
+			}
+		}
+
+		// Update health checker with current upstreams.
+		upstreamInfos := buildUpstreamInfos(rt)
+		healthChecker.UpdateUpstreams(upstreamInfos)
+		healthChecker.CheckNow(context.Background())
+
+		// Update logging level.
+		setupLogger(newCfg)
+
+		slog.Info("config reload applied",
+			"upstreams_added", added,
+			"upstreams_removed", removed,
+		)
+
+		return &server.ReloadResult{
+			Status:           "ok",
+			UpstreamsAdded:   added,
+			UpstreamsRemoved: removed,
+		}, nil
 	}
 
 	if opts == nil {
 		opts = &server.Options{}
 	}
 	opts.HealthChecker = healthChecker
-	opts.ReloadFunc = reloadFunc
+	opts.ReloadFunc = reload
 
 	srv := server.New(cfg, handler, rt, m, opts)
 
@@ -137,9 +214,7 @@ func main() {
 		for sig := range sigCh {
 			if sig == syscall.SIGHUP {
 				slog.Info("received SIGHUP, reloading config...")
-				reloadMu.Lock()
-				result, err := reload(context.Background(), *configPath, cfg, rt, handler, opts, m, healthChecker)
-				reloadMu.Unlock()
+				result, err := reload(context.Background())
 				if err != nil {
 					slog.Error("config reload failed", "error", err)
 				} else {
@@ -183,113 +258,15 @@ func main() {
 	}
 }
 
-// reload loads a new config and atomically applies the changes.
-func reload(_ context.Context, configPath string, _ *config.Config, rt *router.RouteTable, handler *proxy.Handler, opts *server.Options, _ *metrics.Metrics, hc *health.Checker) (*server.ReloadResult, error) {
-	newCfg, err := config.Load(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
-
-	// Diff upstreams against the router's current list (not the original config,
-	// which may be stale after prior reloads).
-	oldUpstreams := make(map[string]bool)
-	for _, name := range rt.Upstreams() {
-		oldUpstreams[name] = true
-	}
-	newUpstreams := make(map[string]bool)
-	for _, u := range newCfg.Upstreams() {
-		newUpstreams[u.Name()] = true
-	}
-
-	var added, removed []string
-	for name := range newUpstreams {
-		if !oldUpstreams[name] {
-			added = append(added, name)
-		}
-	}
-	for name := range oldUpstreams {
-		if !newUpstreams[name] {
-			removed = append(removed, name)
-		}
-	}
-
-	// Create transports for added upstreams.
-	newTransports, err := buildTransportsForNames(newCfg, added)
-	if err != nil {
-		return nil, fmt.Errorf("create transports for new upstreams: %w", err)
-	}
-
-	// Apply changes atomically (at this point, all prep has succeeded).
-
-	// Remove old upstreams from router.
-	for _, name := range removed {
-		rt.RemoveUpstream(name)
-	}
-
-	// Add new upstreams to router.
-	for _, ucfg := range newCfg.Upstreams() {
-		if t, ok := newTransports[ucfg.Name()]; ok {
-			rt.AddUpstream(ucfg.Name(), t, ucfg)
-		}
-	}
-
-	// Update rate limiter.
-	handler.SetRateLimiter(policy.NewRateLimiter(newCfg))
-
-	// Update authenticator if auth is configured.
-	if opts != nil && opts.Authenticator != nil {
-		dbPath := newCfg.Server().DBPath()
-		if dbPath != "" {
-			store, err := auth.NewSQLiteStore(dbPath)
-			if err != nil {
-				slog.Error("reload: failed to open caller database", "error", err)
-			} else {
-				newAuth := auth.NewAuthenticator(store, newCfg.Roles())
-				opts.Authenticator = newAuth
-			}
-		}
-	}
-
-	// Update health checker with current upstreams.
-	if hc != nil {
-		upstreamDetails := rt.UpstreamDetails()
-		upstreamInfos := make([]health.UpstreamInfo, len(upstreamDetails))
-		for i, u := range upstreamDetails {
-			upstreamInfos[i] = health.UpstreamInfo{
-				Name:      u.Name,
-				Transport: u.Transport,
-				Tools:     func() int { return len(u.Tools) },
-				Stale:     func() bool { return u.Stale },
-			}
-		}
-		hc.UpdateUpstreams(upstreamInfos)
-		hc.CheckNow(context.Background())
-	}
-
-	// Update logging level.
-	setupLogger(newCfg)
-
-	slog.Info("config reload applied",
-		"upstreams_added", added,
-		"upstreams_removed", removed,
-	)
-
-	return &server.ReloadResult{
-		Status:           "ok",
-		UpstreamsAdded:   added,
-		UpstreamsRemoved: removed,
-	}, nil
-}
-
-func buildTransportsForNames(cfg *config.Config, names []string) (map[string]transport.Transport, error) {
-	nameSet := make(map[string]bool, len(names))
-	for _, n := range names {
-		nameSet[n] = true
-	}
-
+// buildTransports creates transports for upstreams in cfg. If filter is non-nil,
+// only upstreams whose names are in the filter are built. If filter is nil, all
+// upstreams are built. On the startup path (nil filter), build errors are logged
+// and skipped. On the reload path (non-nil filter), any error causes cleanup and
+// an error return.
+func buildTransports(cfg *config.Config, filter map[string]bool) (map[string]transport.Transport, error) {
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		if !nameSet[ucfg.Name()] {
+		if filter != nil && !filter[ucfg.Name()] {
 			continue
 		}
 		var t transport.Transport
@@ -303,15 +280,38 @@ func buildTransportsForNames(cfg *config.Config, names []string) (map[string]tra
 			err = fmt.Errorf("unsupported transport type %q", ucfg.Transport())
 		}
 		if err != nil {
-			// Clean up any already-created transports.
-			for _, created := range transports {
-				created.Close()
+			if filter != nil {
+				// Reload path: clean up and return error.
+				for _, created := range transports {
+					created.Close()
+				}
+				return nil, fmt.Errorf("upstream %q: %w", ucfg.Name(), err)
 			}
-			return nil, fmt.Errorf("upstream %q: %w", ucfg.Name(), err)
+			// Startup path: log and skip.
+			slog.Warn("skip upstream", "upstream", ucfg.Name(), "error", err)
+			continue
 		}
 		transports[ucfg.Name()] = t
 	}
 	return transports, nil
+}
+
+func buildHealthChecker(rt *router.RouteTable, m *metrics.Metrics) *health.Checker {
+	return health.NewChecker(buildUpstreamInfos(rt), m)
+}
+
+func buildUpstreamInfos(rt *router.RouteTable) []health.UpstreamInfo {
+	upstreamDetails := rt.UpstreamDetails()
+	upstreamInfos := make([]health.UpstreamInfo, len(upstreamDetails))
+	for i, u := range upstreamDetails {
+		upstreamInfos[i] = health.UpstreamInfo{
+			Name:      u.Name,
+			Transport: u.Transport,
+			Tools:     func() int { return len(u.Tools) },
+			Stale:     func() bool { return u.Stale },
+		}
+	}
+	return upstreamInfos
 }
 
 func setupLogger(cfg *config.Config) {
@@ -366,26 +366,4 @@ func buildAuthOpts(cfg *config.Config) *server.Options {
 	}
 
 	return opts
-}
-
-func buildTransports(cfg *config.Config) (map[string]transport.Transport, error) {
-	transports := make(map[string]transport.Transport)
-	for _, ucfg := range cfg.Upstreams() {
-		var t transport.Transport
-		var err error
-		switch ucfg.Transport() {
-		case "streamable-http":
-			t, err = transport.NewHTTPTransport(ucfg)
-		case "stdio":
-			t, err = transport.NewStdioTransport(ucfg)
-		default:
-			err = fmt.Errorf("unsupported transport type %q", ucfg.Transport())
-		}
-		if err != nil {
-			slog.Warn("skip upstream", "upstream", ucfg.Name(), "error", err)
-			continue
-		}
-		transports[ucfg.Name()] = t
-	}
-	return transports, nil
 }
