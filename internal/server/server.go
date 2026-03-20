@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/proxy"
@@ -22,13 +23,31 @@ type Server struct {
 	router     *router.RouteTable
 }
 
-// New creates a Server from config, proxy handler, and router.
-func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable) *Server {
+// Options configures optional Server behavior.
+type Options struct {
+	// Authenticator, if non-nil, wraps the MCP endpoint with auth middleware.
+	Authenticator *auth.Authenticator
+	// AdminAuth, if non-nil, wraps admin endpoints with admin auth middleware.
+	AdminAuth func(http.Handler) http.Handler
+}
+
+// New creates a Server from config, proxy handler, router, and options.
+func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, opts *Options) *Server {
 	s := &Server{proxy: p, router: rt}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /mcp", s.handleMCP)
-	mux.HandleFunc("POST /admin/refresh", s.handleRefresh)
+
+	var mcpHandler http.Handler = http.HandlerFunc(s.handleMCP)
+	if opts != nil && opts.Authenticator != nil {
+		mcpHandler = opts.Authenticator.Middleware(mcpHandler)
+	}
+	mux.Handle("POST /mcp", mcpHandler)
+
+	var adminHandler http.Handler = http.HandlerFunc(s.handleRefresh)
+	if opts != nil && opts.AdminAuth != nil {
+		adminHandler = opts.AdminAuth(adminHandler)
+	}
+	mux.Handle("POST /admin/refresh", adminHandler)
 
 	s.httpServer = &http.Server{
 		Addr:    cfg.Server().Address(),
@@ -124,14 +143,14 @@ func (s *Server) handleSingle(w http.ResponseWriter, r *http.Request, req *jsonr
 	}
 }
 
-func (s *Server) dispatch(_ context.Context, req *jsonrpc.Request) *jsonrpc.Response {
+func (s *Server) dispatch(ctx context.Context, req *jsonrpc.Request) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
 	case "ping":
 		return s.handlePing(req)
 	case "tools/list":
-		return s.handleToolsList(req)
+		return s.handleToolsList(ctx, req)
 	case "tools/call":
 		// Handled separately in handleSingle for SSE support.
 		// In batch mode, we use transport.Send which resolves SSE to a final response.
@@ -179,8 +198,8 @@ func (s *Server) handlePing(req *jsonrpc.Request) *jsonrpc.Response {
 	return resp
 }
 
-func (s *Server) handleToolsList(req *jsonrpc.Request) *jsonrpc.Response {
-	resp, err := s.proxy.HandleToolsList(req.ID)
+func (s *Server) handleToolsList(ctx context.Context, req *jsonrpc.Request) *jsonrpc.Response {
+	resp, err := s.proxy.HandleToolsList(ctx, req.ID)
 	if err != nil {
 		return jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInternalError, err.Error())
 	}

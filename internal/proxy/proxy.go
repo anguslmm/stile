@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/transport"
@@ -22,9 +23,21 @@ func NewHandler(rt *router.RouteTable) *Handler {
 	return &Handler{router: rt}
 }
 
-// HandleToolsList returns the merged tool list from all upstreams.
-func (h *Handler) HandleToolsList(id jsonrpc.ID) (*jsonrpc.Response, error) {
+// HandleToolsList returns the merged tool list from all upstreams,
+// filtered by the caller's allowed tools if a caller is present.
+func (h *Handler) HandleToolsList(ctx context.Context, id jsonrpc.ID) (*jsonrpc.Response, error) {
 	tools := h.router.ListTools()
+
+	caller := auth.CallerFromContext(ctx)
+	if caller != nil {
+		filtered := make([]transport.ToolSchema, 0, len(tools))
+		for _, t := range tools {
+			if caller.CanAccessTool(t.Name) {
+				filtered = append(filtered, t)
+			}
+		}
+		tools = filtered
+	}
 
 	result := struct {
 		Tools []transport.ToolSchema `json:"tools"`
@@ -43,6 +56,12 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil || params.Name == "" {
 		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInvalidParams, "missing or invalid params.name"))
+		return
+	}
+
+	caller := auth.CallerFromContext(ctx)
+	if caller != nil && !caller.CanAccessTool(params.Name) {
+		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, -32000, "access denied"))
 		return
 	}
 

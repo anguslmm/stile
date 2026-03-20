@@ -13,11 +13,12 @@ import (
 type Config struct {
 	server    serverConfig
 	upstreams []UpstreamConfig
+	authEnvs  []AuthEnvConfig
 }
 
 // Server returns the server configuration.
 func (c *Config) Server() ServerConfig {
-	return ServerConfig{address: c.server.address, toolCacheTTL: c.server.toolCacheTTL}
+	return ServerConfig{address: c.server.address, toolCacheTTL: c.server.toolCacheTTL, dbPath: c.server.dbPath}
 }
 
 // Upstreams returns a copy of the upstream configurations.
@@ -27,10 +28,18 @@ func (c *Config) Upstreams() []UpstreamConfig {
 	return out
 }
 
+// AuthEnvs returns a copy of the auth env configurations.
+func (c *Config) AuthEnvs() []AuthEnvConfig {
+	out := make([]AuthEnvConfig, len(c.authEnvs))
+	copy(out, c.authEnvs)
+	return out
+}
+
 // ServerConfig provides read-only access to server settings.
 type ServerConfig struct {
 	address      string
 	toolCacheTTL time.Duration
+	dbPath       string
 }
 
 // Address returns the listen address (e.g. ":8080").
@@ -40,9 +49,31 @@ func (s ServerConfig) Address() string { return s.address }
 // Default: 5 minutes.
 func (s ServerConfig) ToolCacheTTL() time.Duration { return s.toolCacheTTL }
 
+// DBPath returns the path to the SQLite database for caller storage.
+func (s ServerConfig) DBPath() string { return s.dbPath }
+
 type serverConfig struct {
 	address      string
 	toolCacheTTL time.Duration
+	dbPath       string
+}
+
+// AuthEnvConfig provides read-only access to an auth env's settings.
+type AuthEnvConfig struct {
+	name        string
+	credentials map[string]string // upstream name → env var name
+}
+
+// Name returns the auth env name.
+func (a *AuthEnvConfig) Name() string { return a.name }
+
+// Credentials returns a copy of the credentials map.
+func (a *AuthEnvConfig) Credentials() map[string]string {
+	out := make(map[string]string, len(a.credentials))
+	for k, v := range a.credentials {
+		out[k] = v
+	}
+	return out
 }
 
 // UpstreamConfig provides read-only access to an upstream's settings.
@@ -92,13 +123,15 @@ func (a *AuthConfig) TokenEnv() string { return a.tokenEnv }
 // --- raw types for YAML unmarshaling ---
 
 type rawConfig struct {
-	Server    rawServerConfig    `yaml:"server"`
-	Upstreams []rawUpstreamConfig `yaml:"upstreams"`
+	Server    rawServerConfig            `yaml:"server"`
+	Upstreams []rawUpstreamConfig        `yaml:"upstreams"`
+	AuthEnvs  map[string]map[string]string `yaml:"auth_envs"`
 }
 
 type rawServerConfig struct {
 	Address      string `yaml:"address"`
 	ToolCacheTTL string `yaml:"tool_cache_ttl"`
+	DBPath       string `yaml:"db_path"`
 }
 
 type rawUpstreamConfig struct {
@@ -150,6 +183,7 @@ func convert(raw rawConfig) (*Config, error) {
 	cfg := &Config{
 		server: serverConfig{
 			address: raw.Server.Address,
+			dbPath:  raw.Server.DBPath,
 		},
 	}
 	if cfg.server.address == "" {
@@ -190,6 +224,17 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.upstreams[i] = u
 	}
 
+	for name, creds := range raw.AuthEnvs {
+		ae := AuthEnvConfig{
+			name:        name,
+			credentials: make(map[string]string, len(creds)),
+		}
+		for k, v := range creds {
+			ae.credentials[k] = v
+		}
+		cfg.authEnvs = append(cfg.authEnvs, ae)
+	}
+
 	return cfg, nil
 }
 
@@ -198,15 +243,15 @@ func validate(raw rawConfig) error {
 		return fmt.Errorf("config: at least one upstream is required")
 	}
 
-	names := make(map[string]bool, len(raw.Upstreams))
+	upstreamNames := make(map[string]bool, len(raw.Upstreams))
 	for i, u := range raw.Upstreams {
 		if u.Name == "" {
 			return fmt.Errorf("config: upstream[%d]: name is required", i)
 		}
-		if names[u.Name] {
+		if upstreamNames[u.Name] {
 			return fmt.Errorf("config: upstream %q: duplicate name", u.Name)
 		}
-		names[u.Name] = true
+		upstreamNames[u.Name] = true
 
 		switch u.Transport {
 		case "streamable-http":
@@ -219,6 +264,20 @@ func validate(raw rawConfig) error {
 			}
 		default:
 			return fmt.Errorf("config: upstream %q: transport must be \"streamable-http\" or \"stdio\", got %q", u.Name, u.Transport)
+		}
+	}
+
+	for envName, creds := range raw.AuthEnvs {
+		if envName == "" {
+			return fmt.Errorf("config: auth_envs: empty env name")
+		}
+		for upstreamName, envVar := range creds {
+			if !upstreamNames[upstreamName] {
+				return fmt.Errorf("config: auth_envs[%q]: references unknown upstream %q", envName, upstreamName)
+			}
+			if envVar == "" {
+				return fmt.Errorf("config: auth_envs[%q]: empty env var for upstream %q", envName, upstreamName)
+			}
 		}
 	}
 

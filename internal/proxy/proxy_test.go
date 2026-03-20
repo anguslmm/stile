@@ -94,7 +94,7 @@ func TestToolsListMergesUpstreams(t *testing.T) {
 
 	h := NewHandler(rt)
 
-	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
+	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	if err != nil {
 		t.Fatalf("HandleToolsList: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestUpstreamDownAtStartup(t *testing.T) {
 
 	h := NewHandler(rt)
 
-	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
+	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ upstreams:
 	h := NewHandler(rt)
 
 	// tools/list should return tools from both upstreams.
-	resp, err := h.HandleToolsList(jsonrpc.IntID(1))
+	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	if err != nil {
 		t.Fatalf("HandleToolsList: %v", err)
 	}

@@ -209,3 +209,102 @@ func TestSliceGettersReturnCopies(t *testing.T) {
 		t.Error("mutating Tools() return value affected internal state")
 	}
 }
+
+func TestAuthEnvConfigLoads(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+  - name: notion
+    transport: streamable-http
+    url: https://mcp.notion.com
+
+auth_envs:
+  dev:
+    github: GITHUB_DEV_TOKEN
+    notion: NOTION_DEV_TOKEN
+  prod:
+    github: GITHUB_PROD_TOKEN
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	envs := cfg.AuthEnvs()
+	if len(envs) != 2 {
+		t.Fatalf("expected 2 auth envs, got %d", len(envs))
+	}
+
+	// Find the dev env.
+	var dev *AuthEnvConfig
+	for i := range envs {
+		if envs[i].Name() == "dev" {
+			dev = &envs[i]
+		}
+	}
+	if dev == nil {
+		t.Fatal("missing dev auth env")
+	}
+	creds := dev.Credentials()
+	if creds["github"] != "GITHUB_DEV_TOKEN" {
+		t.Errorf("dev github credential = %q, want GITHUB_DEV_TOKEN", creds["github"])
+	}
+	if creds["notion"] != "NOTION_DEV_TOKEN" {
+		t.Errorf("dev notion credential = %q, want NOTION_DEV_TOKEN", creds["notion"])
+	}
+}
+
+func TestAuthEnvUnknownUpstream(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+
+auth_envs:
+  dev:
+    nonexistent: SOME_TOKEN
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for auth env referencing unknown upstream")
+	}
+}
+
+func TestAuthEnvEmptyEnvVar(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+
+auth_envs:
+  dev:
+    github: ""
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for empty env var in auth env")
+	}
+}
+
+func TestDBPathLoads(t *testing.T) {
+	yaml := `
+server:
+  db_path: /data/stile.db
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().DBPath() != "/data/stile.db" {
+		t.Errorf("db_path = %q, want /data/stile.db", cfg.Server().DBPath())
+	}
+}

@@ -11,11 +11,14 @@ This document tracks the status of each implementation task. Agents should read 
 | 3 | Inbound server + proxy handler | [task-03.md](tasks/task-03.md) | done |
 | 4 | Stdio transport | [task-04.md](tasks/task-04.md) | done |
 | 5 | Router + route table + tool discovery/caching | [task-05.md](tasks/task-05.md) | done |
-| 6 | Auth middleware | [task-06.md](tasks/task-06.md) | not started |
+| 5.1 | Role-based access control | [task-05.1.md](tasks/task-05.1.md) | not started |
+| 5.2 | CLI caller management | [task-05.2.md](tasks/task-05.2.md) | not started |
+| 6 | Auth middleware | [task-06.md](tasks/task-06.md) | done |
 | 7 | Rate limiting + ACLs + input validation | [task-07.md](tasks/task-07.md) | not started |
 | 8 | Observability | [task-08.md](tasks/task-08.md) | not started |
 | 9 | Health checks + graceful shutdown + hardening | [task-09.md](tasks/task-09.md) | not started |
 | 10 | Integration tests | [task-10.md](tasks/task-10.md) | not started |
+| 11 | Admin API for caller management | [task-11.md](tasks/task-11.md) | not started |
 
 ## Notes
 

@@ -1,0 +1,8 @@
+server:
+  address: ":8080"
+  db_path: "/tmp/stile-test.db"
+
+upstreams:
+  - name: fake
+    transport: streamable-http
+    url: http://localhost:9090/mcp

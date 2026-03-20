@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
@@ -41,8 +43,10 @@ func main() {
 	}
 	defer rt.Close()
 
+	opts := buildAuthOpts(cfg)
+
 	handler := proxy.NewHandler(rt)
-	srv := server.New(cfg, handler, rt)
+	srv := server.New(cfg, handler, rt, opts)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -62,6 +66,36 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Printf("server stopped: %v", err)
 	}
+}
+
+func buildAuthOpts(cfg *config.Config) *server.Options {
+	dbPath := cfg.Server().DBPath()
+	if dbPath == "" {
+		return nil
+	}
+
+	store, err := auth.NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Fatalf("open caller database: %v", err)
+	}
+
+	authenticator := auth.NewAuthenticator(store, cfg.AuthEnvs())
+
+	opts := &server.Options{
+		Authenticator: authenticator,
+	}
+
+	// Admin auth: read ADMIN_API_KEY from env.
+	adminKey := os.Getenv("ADMIN_API_KEY")
+	if adminKey != "" {
+		adminHash := sha256.Sum256([]byte(adminKey))
+		opts.AdminAuth = auth.AdminAuthMiddleware(adminHash, store)
+	} else {
+		var zeroHash [32]byte
+		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, store)
+	}
+
+	return opts
 }
 
 func buildTransports(cfg *config.Config) (map[string]transport.Transport, error) {
