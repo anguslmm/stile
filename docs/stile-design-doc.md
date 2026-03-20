@@ -166,38 +166,73 @@ The `tools/list` call to each upstream is cached in memory. The cache is refresh
 
 ## 5. Authentication & Authorization
 
-### 5.1 Inbound Auth (Agent → Gateway)
+### 5.1 Auth Envs (Config)
 
-The gateway authenticates callers via API keys in the `Authorization: Bearer` header. Each API key maps to a caller identity with a name, a set of allowed tool patterns, and optional rate limit overrides.
+Auth envs are named bundles of upstream credentials, defined in YAML config. Each auth env maps upstream names to environment variables containing the credentials for that upstream.
 
 ```yaml
-callers:
-  - name: claude-code-dev
-    api_key_env: DEV_GATEWAY_KEY
-    allowed_tools: ["github/*", "linear/*", "db_query"]
-    rate_limit: 100/min
-
-  - name: ops-agent
-    api_key_env: OPS_GATEWAY_KEY
-    allowed_tools: ["deploy/*", "oncall/*", "datadog/*"]
-    rate_limit: 30/min
+auth_envs:
+  dev:
+    github: GITHUB_DEV_TOKEN
+    notion: NOTION_DEV_TOKEN
+  prod:
+    github: GITHUB_PROD_TOKEN
+    notion: NOTION_PROD_TOKEN
+  ops:
+    github: GITHUB_OPS_TOKEN
+    datadog: DATADOG_OPS_TOKEN
 ```
 
-API keys are stored as hashes (SHA-256) in memory. The auth middleware hashes the incoming bearer token and looks up the caller. If no match is found, the request is rejected with a JSON-RPC error (code `-32000`).
+Credential values are loaded from environment variables at startup. Supported credential types for v0.1: bearer tokens. Future: OAuth2 client credentials flow, mutual TLS.
 
-### 5.2 Outbound Auth (Gateway → Upstream)
+### 5.2 Callers (Database)
 
-Each upstream has its own auth requirements. The gateway manages credentials per-upstream, loaded from environment variables at startup. When proxying a request, the gateway injects the appropriate credentials into the upstream request. The agent never sees or manages upstream credentials.
+Caller data lives in a SQLite database (volume-mounted for container persistence). Each caller has a name, a set of allowed tool patterns, an optional rate limit, and one or more API keys. Each API key is associated with an auth env, which determines which upstream credentials are used when that key authenticates the request.
 
-Supported credential types for v0.1: bearer tokens (from env vars). Future: OAuth2 client credentials flow, mutual TLS.
+```
+caller: angus
+  allowed_tools: ["github/*", "notion/*"]
+  rate_limit: 100/min
+  api_keys:
+    - key: sk-abc123...  (stored as SHA-256 hash)
+      auth_env: dev
+    - key: sk-def456...  (stored as SHA-256 hash)
+      auth_env: prod
+```
 
-### 5.3 Admin Auth (Operator → Gateway)
+When a caller has multiple keys with overlapping upstream coverage, the auth env is determined by which key was used to authenticate the request — there is no ambiguity.
 
-Admin endpoints (`/admin/refresh`, `/admin/reload`) are protected by a separate admin API key, configured via the `ADMIN_API_KEY` environment variable. Requests must include `Authorization: Bearer <token>` where the token matches the admin key. If `ADMIN_API_KEY` is not set and auth is disabled (no callers configured), admin endpoints are open — matching the dev-mode behavior. If `ADMIN_API_KEY` is not set but callers are configured (auth is enabled), admin endpoints return `403 Forbidden` to prevent accidental exposure.
+### 5.3 CallerStore Interface
+
+Caller lookups are abstracted behind a `CallerStore` interface:
+
+```go
+type CallerStore interface {
+    LookupByKey(hashedKey [32]byte) (*Caller, error)
+}
+```
+
+The v0.1 implementation is SQLite-backed. This interface allows swapping to Postgres or another store later without touching the auth or proxy layers.
+
+### 5.4 Inbound Auth (Agent → Gateway)
+
+The gateway authenticates callers via API keys in the `Authorization: Bearer` header. The auth middleware hashes the incoming token with SHA-256 and looks it up via `CallerStore`. The result includes the caller identity, their allowed tools, and the auth env associated with that key.
+
+If no match is found, the request is rejected with a JSON-RPC error (code `-32000`).
+
+### 5.5 Outbound Auth (Gateway → Upstream)
+
+When proxying a request, the gateway injects upstream credentials based on the auth env resolved from the caller's API key. The agent never sees or manages upstream credentials.
+
+For example: if a caller authenticates with a key mapped to the "dev" auth env, and the request is routed to the "github" upstream, the gateway injects the value of `GITHUB_DEV_TOKEN` as the bearer token.
+
+### 5.6 Admin Auth (Operator → Gateway)
+
+Admin endpoints (`/admin/refresh`, `/admin/reload`) are protected by a separate admin API key, configured via the `ADMIN_API_KEY` environment variable. Requests must include `Authorization: Bearer <token>` where the token matches the admin key. If `ADMIN_API_KEY` is not set and no callers exist in the database, admin endpoints are open — matching the dev-mode behavior. If `ADMIN_API_KEY` is not set but callers exist, admin endpoints return `403 Forbidden` to prevent accidental exposure.
 
 Health and metrics endpoints (`/healthz`, `/readyz`, `/metrics`) are always unauthenticated — they are consumed by infrastructure tooling.
 
-### 5.4 Authorization
+### 5.7 Authorization
 
 After authentication, the gateway checks the caller's `allowed_tools` list against the requested tool name using glob matching. The `tools/list` response is also filtered per-caller, so agents only see the tools they're authorized to use.
 
@@ -323,8 +358,9 @@ The dependency footprint is intentionally minimal:
 | `prometheus/client_golang` | Metrics exposition |
 | `santhosh-tekuri/jsonschema` | JSON Schema validation |
 | `gobwas/glob` | Tool name pattern matching |
+| `modernc.org/sqlite` | SQLite driver for caller database (pure Go, no CGo) |
 
-Everything else is Go stdlib: `net/http`, `encoding/json`, `os/exec`, `log/slog`, `sync`, `context`.
+Everything else is Go stdlib: `net/http`, `encoding/json`, `os/exec`, `log/slog`, `sync`, `context`, `database/sql`.
 
 ---
 
