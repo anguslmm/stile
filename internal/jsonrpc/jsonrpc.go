@@ -188,6 +188,15 @@ func NewErrorResponse(id ID, code int, message string) *Response {
 	}
 }
 
+// NewErrorResponseWithData creates an error response with additional data.
+func NewErrorResponseWithData(id ID, code int, message string, data json.RawMessage) *Response {
+	return &Response{
+		JSONRPC: Version,
+		Error:   &Error{Code: code, Message: message, Data: data},
+		ID:      id,
+	}
+}
+
 // ParseMessage parses a JSON-RPC 2.0 message, which may be a single request
 // or a batch (JSON array). It returns the parsed requests, whether the input
 // was a batch, and any error.

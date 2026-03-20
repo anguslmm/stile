@@ -9,18 +9,21 @@ import (
 
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
 // Handler dispatches MCP tool calls to the correct upstream via the router.
 type Handler struct {
-	router *router.RouteTable
+	router      *router.RouteTable
+	rateLimiter *policy.RateLimiter
 }
 
 // NewHandler creates a Handler backed by the given RouteTable.
-func NewHandler(rt *router.RouteTable) *Handler {
-	return &Handler{router: rt}
+// rateLimiter may be nil to disable rate limiting.
+func NewHandler(rt *router.RouteTable, rateLimiter *policy.RateLimiter) *Handler {
+	return &Handler{router: rt, rateLimiter: rateLimiter}
 }
 
 // HandleToolsList returns the merged tool list from all upstreams,
@@ -69,6 +72,20 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	if err != nil {
 		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInvalidParams, "unknown tool"))
 		return
+	}
+
+	// Rate limit check.
+	if h.rateLimiter != nil {
+		callerName := ""
+		if caller != nil {
+			h.rateLimiter.RegisterCaller(caller.Name, caller.Roles)
+			callerName = caller.Name
+		}
+		if ok, denial := h.rateLimiter.Allow(callerName, params.Name, route.Upstream.Name); !ok {
+			data, _ := json.Marshal(map[string]string{"limit": denial.Level})
+			writeJSONResponse(w, jsonrpc.NewErrorResponseWithData(req.ID, -32000, "rate limit exceeded", data))
+			return
+		}
 	}
 
 	result, err := route.Upstream.Transport.RoundTrip(ctx, req)

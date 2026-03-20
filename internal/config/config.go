@@ -3,19 +3,90 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gobwas/glob"
 	"gopkg.in/yaml.v3"
 )
 
+// RateLimit represents a parsed rate limit specification (e.g. "100/min").
+type RateLimit struct {
+	rate  float64 // requests per second
+	burst int     // burst size
+}
+
+// Rate returns the requests-per-second rate.
+func (r RateLimit) Rate() float64 { return r.rate }
+
+// Burst returns the burst size.
+func (r RateLimit) Burst() int { return r.burst }
+
+// ParseRateLimit parses a rate limit string like "100/min", "10/sec", "5000/hour".
+// Burst is set to the per-second rate rounded up (at least 1).
+func ParseRateLimit(s string) (RateLimit, error) {
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return RateLimit{}, fmt.Errorf("config: invalid rate limit %q: expected format N/unit", s)
+	}
+
+	count, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || count <= 0 {
+		return RateLimit{}, fmt.Errorf("config: invalid rate limit %q: count must be a positive number", s)
+	}
+
+	var perSecond float64
+	switch parts[1] {
+	case "sec", "second":
+		perSecond = count
+	case "min", "minute":
+		perSecond = count / 60
+	case "hour":
+		perSecond = count / 3600
+	default:
+		return RateLimit{}, fmt.Errorf("config: invalid rate limit %q: unit must be sec, min, or hour", s)
+	}
+
+	burst := int(math.Ceil(perSecond))
+	if burst < 1 {
+		burst = 1
+	}
+
+	return RateLimit{rate: perSecond, burst: burst}, nil
+}
+
 // Config is immutable after construction via Load.
 type Config struct {
-	server    serverConfig
-	upstreams []UpstreamConfig
-	roles     []RoleConfig
+	server          serverConfig
+	upstreams       []UpstreamConfig
+	roles           []RoleConfig
+	rateLimitDefaults rateLimitDefaults
 }
+
+type rateLimitDefaults struct {
+	defaultCaller   *RateLimit
+	defaultTool     *RateLimit
+	defaultUpstream *RateLimit
+}
+
+// RateLimitDefaults provides read-only access to global rate limit defaults.
+type RateLimitDefaults struct {
+	defaultCaller   *RateLimit
+	defaultTool     *RateLimit
+	defaultUpstream *RateLimit
+}
+
+// DefaultCaller returns the default per-caller rate limit, or nil if unset.
+func (r RateLimitDefaults) DefaultCaller() *RateLimit { return r.defaultCaller }
+
+// DefaultTool returns the default per-caller-per-tool rate limit, or nil if unset.
+func (r RateLimitDefaults) DefaultTool() *RateLimit { return r.defaultTool }
+
+// DefaultUpstream returns the default per-upstream rate limit, or nil if unset.
+func (r RateLimitDefaults) DefaultUpstream() *RateLimit { return r.defaultUpstream }
 
 // Server returns the server configuration.
 func (c *Config) Server() ServerConfig {
@@ -34,6 +105,15 @@ func (c *Config) Roles() []RoleConfig {
 	out := make([]RoleConfig, len(c.roles))
 	copy(out, c.roles)
 	return out
+}
+
+// RateLimitDefaults returns the global rate limit defaults.
+func (c *Config) RateLimitDefaults() RateLimitDefaults {
+	return RateLimitDefaults{
+		defaultCaller:   c.rateLimitDefaults.defaultCaller,
+		defaultTool:     c.rateLimitDefaults.defaultTool,
+		defaultUpstream: c.rateLimitDefaults.defaultUpstream,
+	}
 }
 
 // ServerConfig provides read-only access to server settings.
@@ -61,9 +141,11 @@ type serverConfig struct {
 
 // RoleConfig provides read-only access to a role's settings.
 type RoleConfig struct {
-	name         string
-	allowedTools []string          // glob patterns
-	credentials  map[string]string // upstream name → env var name
+	name           string
+	allowedTools   []string          // glob patterns
+	credentials    map[string]string // upstream name → env var name
+	rateLimit      *RateLimit        // per-caller rate limit override
+	toolRateLimit  *RateLimit        // per-caller-per-tool rate limit override
 }
 
 // Name returns the role name.
@@ -85,6 +167,12 @@ func (r *RoleConfig) Credentials() map[string]string {
 	return out
 }
 
+// RateLimit returns the per-caller rate limit override for this role, or nil if unset.
+func (r *RoleConfig) RateLimit() *RateLimit { return r.rateLimit }
+
+// ToolRateLimit returns the per-caller-per-tool rate limit override for this role, or nil if unset.
+func (r *RoleConfig) ToolRateLimit() *RateLimit { return r.toolRateLimit }
+
 // UpstreamConfig provides read-only access to an upstream's settings.
 type UpstreamConfig struct {
 	name      string
@@ -93,12 +181,14 @@ type UpstreamConfig struct {
 	transport string
 	auth      *AuthConfig
 	tools     []string
+	rateLimit *RateLimit
 }
 
 func (u *UpstreamConfig) Name() string    { return u.name }
 func (u *UpstreamConfig) URL() string     { return u.url }
 func (u *UpstreamConfig) Transport() string { return u.transport }
-func (u *UpstreamConfig) Auth() *AuthConfig { return u.auth }
+func (u *UpstreamConfig) Auth() *AuthConfig  { return u.auth }
+func (u *UpstreamConfig) RateLimit() *RateLimit { return u.rateLimit }
 
 // Command returns a copy of the command slice.
 func (u *UpstreamConfig) Command() []string {
@@ -132,14 +222,23 @@ func (a *AuthConfig) TokenEnv() string { return a.tokenEnv }
 // --- raw types for YAML unmarshaling ---
 
 type rawRoleConfig struct {
-	AllowedTools []string          `yaml:"allowed_tools"`
-	Credentials  map[string]string `yaml:"credentials"`
+	AllowedTools  []string          `yaml:"allowed_tools"`
+	Credentials   map[string]string `yaml:"credentials"`
+	RateLimit     string            `yaml:"rate_limit"`
+	ToolRateLimit string            `yaml:"tool_rate_limit"`
+}
+
+type rawRateLimitDefaults struct {
+	DefaultCaller   string `yaml:"default_caller"`
+	DefaultTool     string `yaml:"default_tool"`
+	DefaultUpstream string `yaml:"default_upstream"`
 }
 
 type rawConfig struct {
-	Server    rawServerConfig          `yaml:"server"`
-	Upstreams []rawUpstreamConfig      `yaml:"upstreams"`
-	Roles     map[string]rawRoleConfig `yaml:"roles"`
+	Server     rawServerConfig          `yaml:"server"`
+	Upstreams  []rawUpstreamConfig      `yaml:"upstreams"`
+	Roles      map[string]rawRoleConfig `yaml:"roles"`
+	RateLimits *rawRateLimitDefaults    `yaml:"rate_limits"`
 
 	// rolesOrdered preserves YAML key order for roles.
 	// Populated by Load/LoadBytes before convert is called.
@@ -153,12 +252,13 @@ type rawServerConfig struct {
 }
 
 type rawUpstreamConfig struct {
-	Name      string        `yaml:"name"`
-	URL       string        `yaml:"url"`
-	Command   []string      `yaml:"command"`
-	Transport string        `yaml:"transport"`
+	Name      string         `yaml:"name"`
+	URL       string         `yaml:"url"`
+	Command   []string       `yaml:"command"`
+	Transport string         `yaml:"transport"`
 	Auth      *rawAuthConfig `yaml:"auth"`
-	Tools     []string      `yaml:"tools"`
+	Tools     []string       `yaml:"tools"`
+	RateLimit string         `yaml:"rate_limit"`
 }
 
 type rawAuthConfig struct {
@@ -262,6 +362,13 @@ func convert(raw rawConfig) (*Config, error) {
 			u.tools = make([]string, len(ru.Tools))
 			copy(u.tools, ru.Tools)
 		}
+		if ru.RateLimit != "" {
+			rl, err := ParseRateLimit(ru.RateLimit)
+			if err != nil {
+				return nil, fmt.Errorf("config: upstream %q: %w", ru.Name, err)
+			}
+			u.rateLimit = &rl
+		}
 		cfg.upstreams[i] = u
 	}
 
@@ -280,7 +387,46 @@ func convert(raw rawConfig) (*Config, error) {
 		for k, v := range rawRole.Credentials {
 			rc.credentials[k] = v
 		}
+		if rawRole.RateLimit != "" {
+			rl, err := ParseRateLimit(rawRole.RateLimit)
+			if err != nil {
+				return nil, fmt.Errorf("config: roles[%q]: %w", name, err)
+			}
+			rc.rateLimit = &rl
+		}
+		if rawRole.ToolRateLimit != "" {
+			rl, err := ParseRateLimit(rawRole.ToolRateLimit)
+			if err != nil {
+				return nil, fmt.Errorf("config: roles[%q]: %w", name, err)
+			}
+			rc.toolRateLimit = &rl
+		}
 		cfg.roles = append(cfg.roles, rc)
+	}
+
+	// Parse global rate limit defaults.
+	if raw.RateLimits != nil {
+		if raw.RateLimits.DefaultCaller != "" {
+			rl, err := ParseRateLimit(raw.RateLimits.DefaultCaller)
+			if err != nil {
+				return nil, fmt.Errorf("config: rate_limits.default_caller: %w", err)
+			}
+			cfg.rateLimitDefaults.defaultCaller = &rl
+		}
+		if raw.RateLimits.DefaultTool != "" {
+			rl, err := ParseRateLimit(raw.RateLimits.DefaultTool)
+			if err != nil {
+				return nil, fmt.Errorf("config: rate_limits.default_tool: %w", err)
+			}
+			cfg.rateLimitDefaults.defaultTool = &rl
+		}
+		if raw.RateLimits.DefaultUpstream != "" {
+			rl, err := ParseRateLimit(raw.RateLimits.DefaultUpstream)
+			if err != nil {
+				return nil, fmt.Errorf("config: rate_limits.default_upstream: %w", err)
+			}
+			cfg.rateLimitDefaults.defaultUpstream = &rl
+		}
 	}
 
 	return cfg, nil

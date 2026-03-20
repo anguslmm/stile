@@ -13,6 +13,7 @@ import (
 
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/server"
@@ -71,7 +72,8 @@ func main() {
 
 	opts := buildAuthOpts(cfg)
 
-	handler := proxy.NewHandler(rt)
+	rateLimiter := policy.NewRateLimiter(cfg)
+	handler := proxy.NewHandler(rt, rateLimiter)
 	srv := server.New(cfg, handler, rt, opts)
 
 	// Graceful shutdown on SIGINT/SIGTERM.

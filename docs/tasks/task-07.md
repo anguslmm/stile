@@ -1,6 +1,6 @@
-# Task 7: Rate Limiting + Policy Enforcement
+# Task 7: Rate Limiting
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 6 (auth — caller identity needed for per-caller limits)
 **Needed by:** Task 8 (observability — rate limit rejections are a metric)
 
@@ -8,7 +8,7 @@
 
 ## Goal
 
-Add rate limiting, JSON Schema input validation, and global tool blocklist/allowlist. After this task, the gateway prevents runaway agents from overwhelming upstreams and can enforce organization-wide tool policies.
+Add token bucket rate limiting to the gateway. After this task, the gateway prevents runaway agents from overwhelming upstreams and protects shared infrastructure from any single caller monopolizing capacity.
 
 ---
 
@@ -79,75 +79,7 @@ When rate limited, return a JSON-RPC error:
 
 ---
 
-## 2. Input Validation
-
-### JSON Schema validation
-
-Optionally validate `tools/call` input params against the tool's JSON Schema before forwarding.
-
-Config:
-```yaml
-upstreams:
-  - name: github
-    validate_input: true    # opt-in per upstream
-```
-
-When enabled:
-1. On `tools/call`, look up the tool's `inputSchema` from the cached schema in the route table
-2. Validate the request's `params.arguments` against it
-3. If invalid → return JSON-RPC error (code `-32602`, "invalid params") with validation details
-4. If valid → proceed with proxying
-
-Use `santhosh-tekuri/jsonschema` for validation (already in the dependency list).
-
-### When to skip
-
-- If the upstream has `validate_input: false` (default), skip validation entirely
-- If the tool has no `inputSchema`, skip validation
-- Validation should not block requests when the schema is unavailable (e.g., upstream is stale)
-
----
-
-## 3. Global Tool Blocklist/Allowlist
-
-Beyond per-caller ACLs, support organization-wide tool policies:
-
-```yaml
-tool_policy:
-  blocklist:
-    - "dangerous_tool"
-    - "internal/*_admin"
-  allowlist: []  # empty = allow everything not blocked
-```
-
-Behavior:
-- Blocklisted tools are removed from all `tools/list` responses and rejected on `tools/call`, regardless of caller ACLs
-- If an allowlist is specified (non-empty), only those tools are available — everything else is blocked
-- Blocklist takes priority over allowlist
-
-This is applied as a filter in the proxy handler, after router resolution but before caller ACL checks.
-
----
-
-## 4. Policy Middleware
-
-Create a policy middleware or checker that the proxy handler calls before forwarding a request:
-
-```go
-type PolicyEngine struct {
-    rateLimiter *RateLimiter
-    validator   *SchemaValidator  // nil if no upstreams have validate_input
-    toolPolicy  *ToolPolicy
-}
-
-func (p *PolicyEngine) Check(caller, tool, upstream string, params json.RawMessage, schema *transport.ToolSchema) error
-```
-
-Returns nil if allowed, or an error that maps to the appropriate JSON-RPC error response.
-
----
-
-## 5. Testable Deliverables
+## 2. Testable Deliverables
 
 ### Rate limiter tests (`internal/policy/`)
 
@@ -158,23 +90,9 @@ Returns nil if allowed, or an error that maps to the appropriate JSON-RPC error 
 5. **Per-upstream limit:** two callers each sending 100/sec to same upstream with 150/sec limit → some rejected
 6. **Rate string parsing:** `"100/min"` → rate 1.67/sec, `"10/sec"` → rate 10/sec, `"invalid"` → error
 
-### Input validation tests
-
-7. **Valid input passes:** params matching schema → no error
-8. **Invalid input rejected:** params missing required field → error with details
-9. **Validation disabled by default:** upstream without validate_input → no validation
-10. **Missing schema skips validation:** tool with no inputSchema → passes
-
-### Tool policy tests
-
-11. **Blocklisted tool rejected on call:** → JSON-RPC error
-12. **Blocklisted tool hidden from list:** → not in tools/list response
-13. **Allowlist restricts to listed tools:** only allowlisted tools visible
-14. **Blocklist overrides allowlist:** tool in both → blocked
-
 ### Integration
 
-15. **Rate limit through full stack:** hit the gateway endpoint rapidly → get rate limit errors after threshold
+7. **Rate limit through full stack:** hit the gateway endpoint rapidly → get rate limit errors after threshold
 
 ### Build check
 
@@ -186,16 +104,17 @@ go vet ./...
 
 ---
 
-## 6. Dependencies
+## 3. Dependencies
 
 This task adds:
 - `golang.org/x/time/rate` for token bucket rate limiting
-- `santhosh-tekuri/jsonschema` for JSON Schema validation
 
 ---
 
-## 7. Out of Scope
+## 4. Out of Scope
 
 - Distributed rate limiting (Redis-backed — not in v0.1 scope)
 - Dynamic rate limit adjustment without config reload
 - Per-tool rate limit overrides in caller config (can be added later)
+- JSON Schema input validation (upstreams validate their own inputs)
+- Global tool blocklist/allowlist (per-caller ACLs from task 6.1 cover this)

@@ -64,7 +64,7 @@ func newTestServer(t *testing.T, mock *mockTransport) *httptest.Server {
 	}
 	t.Cleanup(func() { rt.Close() })
 
-	h := proxy.NewHandler(rt)
+	h := proxy.NewHandler(rt, nil)
 	srv := New(cfg, h, rt, nil)
 	return httptest.NewServer(srv.Handler())
 }

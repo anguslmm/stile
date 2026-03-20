@@ -343,6 +343,121 @@ roles:
 	}
 }
 
+func TestParseRateLimit(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantRate float64
+		wantErr  bool
+	}{
+		{"100/min", 100.0 / 60, false},
+		{"10/sec", 10.0, false},
+		{"5000/hour", 5000.0 / 3600, false},
+		{"1/second", 1.0, false},
+		{"60/minute", 1.0, false},
+		{"invalid", 0, true},
+		{"abc/min", 0, true},
+		{"100/days", 0, true},
+		{"-5/sec", 0, true},
+		{"0/sec", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			rl, err := ParseRateLimit(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ParseRateLimit(%q) should fail", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRateLimit(%q) unexpected error: %v", tt.input, err)
+			}
+			// Allow small floating point tolerance.
+			diff := rl.Rate() - tt.wantRate
+			if diff < -0.01 || diff > 0.01 {
+				t.Errorf("ParseRateLimit(%q).Rate() = %f, want ~%f", tt.input, rl.Rate(), tt.wantRate)
+			}
+			if rl.Burst() < 1 {
+				t.Errorf("ParseRateLimit(%q).Burst() = %d, want >= 1", tt.input, rl.Burst())
+			}
+		})
+	}
+}
+
+func TestRateLimitConfigLoads(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+    rate_limit: 200/min
+
+roles:
+  dev:
+    allowed_tools: ["*"]
+    rate_limit: 100/min
+    tool_rate_limit: 20/min
+
+rate_limits:
+  default_caller: 60/min
+  default_tool: 30/min
+  default_upstream: 300/min
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check upstream rate limit.
+	u := cfg.Upstreams()[0]
+	if u.RateLimit() == nil {
+		t.Fatal("upstream rate limit should be set")
+	}
+	// 200/min = 3.33/sec
+	if r := u.RateLimit().Rate(); r < 3.3 || r > 3.4 {
+		t.Errorf("upstream rate = %f, want ~3.33", r)
+	}
+
+	// Check role rate limits.
+	roles := cfg.Roles()
+	if len(roles) != 1 {
+		t.Fatalf("expected 1 role, got %d", len(roles))
+	}
+	if roles[0].RateLimit() == nil {
+		t.Fatal("role rate limit should be set")
+	}
+	if roles[0].ToolRateLimit() == nil {
+		t.Fatal("role tool rate limit should be set")
+	}
+
+	// Check defaults.
+	defaults := cfg.RateLimitDefaults()
+	if defaults.DefaultCaller() == nil {
+		t.Fatal("default caller rate limit should be set")
+	}
+	if defaults.DefaultTool() == nil {
+		t.Fatal("default tool rate limit should be set")
+	}
+	if defaults.DefaultUpstream() == nil {
+		t.Fatal("default upstream rate limit should be set")
+	}
+}
+
+func TestInvalidRateLimitInConfig(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://example.com
+    rate_limit: invalid
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid rate limit")
+	}
+}
+
 func TestDBPathLoads(t *testing.T) {
 	yaml := `
 server:
