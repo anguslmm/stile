@@ -14,6 +14,8 @@ import (
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
 
+var _ Transport = (*HTTPTransport)(nil)
+
 // HTTPTransport implements Transport for Streamable HTTP MCP servers.
 type HTTPTransport struct {
 	url    string

@@ -40,6 +40,13 @@ type NullID struct{}
 
 func (NullID) jsonrpcID() {}
 
+// Compile-time interface satisfaction checks.
+var (
+	_ ID = StringID("")
+	_ ID = IntID(0)
+	_ ID = NullID{}
+)
+
 // MarshalJSON implements json.Marshaler so NullID serializes as JSON null.
 func (NullID) MarshalJSON() ([]byte, error) {
 	return []byte("null"), nil

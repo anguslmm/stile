@@ -15,6 +15,8 @@ import (
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
 
+var _ Transport = (*StdioTransport)(nil)
+
 // StdioTransport implements Transport for MCP servers that communicate
 // via stdin/stdout using line-delimited JSON-RPC.
 type StdioTransport struct {

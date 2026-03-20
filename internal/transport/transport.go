@@ -116,6 +116,12 @@ func NewStreamResult(stream io.ReadCloser) *StreamResult {
 	return &StreamResult{stream: stream, contentType: "text/event-stream"}
 }
 
+// Compile-time interface satisfaction checks.
+var (
+	_ TransportResult = (*JSONResult)(nil)
+	_ TransportResult = (*StreamResult)(nil)
+)
+
 // Transport is the interface for communicating with an MCP upstream.
 type Transport interface {
 	// RoundTrip sends a JSON-RPC request to the upstream and returns the result.

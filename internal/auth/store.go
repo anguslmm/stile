@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS caller_roles (
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 `
 
+var _ CallerStore = (*SQLiteStore)(nil)
+
 // SQLiteStore implements CallerStore backed by a SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
