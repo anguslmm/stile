@@ -1,6 +1,6 @@
-// seed-caller.go — creates a test caller and prints an API key.
+// seed-caller.go — creates test callers and prints API keys.
 //
-// Usage: go run scripts/seed-caller.go [db-path]
+// Usage: go run cmd/seed/main.go [db-path]
 // Default db-path: /tmp/stile-test.db
 package main
 
@@ -27,26 +27,46 @@ func main() {
 	}
 	defer store.Close()
 
-	// Create caller with access to echo only.
-	_ = store.AddCaller("alice", []string{"echo"})
-	// Create caller with access to everything.
-	_ = store.AddCaller("bob", []string{"*"})
+	// Create callers (named identities — roles are on keys, not callers).
+	_ = store.AddCaller("alice")
+	_ = store.AddCaller("bob")
+	_ = store.AddCaller("charlie")
 
-	aliceKey := "sk-" + generateKey()
-	aliceHash := sha256.Sum256([]byte(aliceKey))
-	if err := store.AddKey("alice", aliceHash, "dev", "alice-dev"); err != nil {
+	// Alice gets TWO role keys: http-only + stdio-only → union sees all tools.
+	aliceHTTPKey := "sk-" + generateKey()
+	aliceHTTPHash := sha256.Sum256([]byte(aliceHTTPKey))
+	if err := store.AddKey("alice", aliceHTTPHash, "http-only", "alice-http"); err != nil {
 		log.Fatal(err)
 	}
 
+	aliceStdioKey := "sk-" + generateKey()
+	aliceStdioHash := sha256.Sum256([]byte(aliceStdioKey))
+	if err := store.AddKey("alice", aliceStdioHash, "stdio-only", "alice-stdio"); err != nil {
+		log.Fatal(err)
+	}
+
+	// Bob gets a "full-access" role key.
 	bobKey := "sk-" + generateKey()
 	bobHash := sha256.Sum256([]byte(bobKey))
-	if err := store.AddKey("bob", bobHash, "dev", "bob-dev"); err != nil {
+	if err := store.AddKey("bob", bobHash, "full-access", "bob-full"); err != nil {
+		log.Fatal(err)
+	}
+
+	// Charlie gets only an "http-only" key → can only see echo + add.
+	charlieKey := "sk-" + generateKey()
+	charlieHash := sha256.Sum256([]byte(charlieKey))
+	if err := store.AddKey("charlie", charlieHash, "http-only", "charlie-http"); err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Printf("Database: %s\n\n", dbPath)
-	fmt.Printf("alice (allowed: echo only):\n  %s\n\n", aliceKey)
-	fmt.Printf("bob   (allowed: *):\n  %s\n\n", bobKey)
+	fmt.Printf("alice (roles: http-only + stdio-only):\n")
+	fmt.Printf("  http-only key:  %s\n", aliceHTTPKey)
+	fmt.Printf("  stdio-only key: %s\n\n", aliceStdioKey)
+	fmt.Printf("bob (role: full-access):\n")
+	fmt.Printf("  %s\n\n", bobKey)
+	fmt.Printf("charlie (role: http-only):\n")
+	fmt.Printf("  %s\n\n", charlieKey)
 	fmt.Println("Use these as: Authorization: Bearer <key>")
 }
 

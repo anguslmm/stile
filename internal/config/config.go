@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gobwas/glob"
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,7 +14,7 @@ import (
 type Config struct {
 	server    serverConfig
 	upstreams []UpstreamConfig
-	authEnvs  []AuthEnvConfig
+	roles     []RoleConfig
 }
 
 // Server returns the server configuration.
@@ -28,10 +29,10 @@ func (c *Config) Upstreams() []UpstreamConfig {
 	return out
 }
 
-// AuthEnvs returns a copy of the auth env configurations.
-func (c *Config) AuthEnvs() []AuthEnvConfig {
-	out := make([]AuthEnvConfig, len(c.authEnvs))
-	copy(out, c.authEnvs)
+// Roles returns a copy of the role configurations.
+func (c *Config) Roles() []RoleConfig {
+	out := make([]RoleConfig, len(c.roles))
+	copy(out, c.roles)
 	return out
 }
 
@@ -58,19 +59,27 @@ type serverConfig struct {
 	dbPath       string
 }
 
-// AuthEnvConfig provides read-only access to an auth env's settings.
-type AuthEnvConfig struct {
-	name        string
-	credentials map[string]string // upstream name → env var name
+// RoleConfig provides read-only access to a role's settings.
+type RoleConfig struct {
+	name         string
+	allowedTools []string          // glob patterns
+	credentials  map[string]string // upstream name → env var name
 }
 
-// Name returns the auth env name.
-func (a *AuthEnvConfig) Name() string { return a.name }
+// Name returns the role name.
+func (r *RoleConfig) Name() string { return r.name }
+
+// AllowedTools returns a copy of the allowed tool patterns.
+func (r *RoleConfig) AllowedTools() []string {
+	out := make([]string, len(r.allowedTools))
+	copy(out, r.allowedTools)
+	return out
+}
 
 // Credentials returns a copy of the credentials map.
-func (a *AuthEnvConfig) Credentials() map[string]string {
-	out := make(map[string]string, len(a.credentials))
-	for k, v := range a.credentials {
+func (r *RoleConfig) Credentials() map[string]string {
+	out := make(map[string]string, len(r.credentials))
+	for k, v := range r.credentials {
 		out[k] = v
 	}
 	return out
@@ -122,10 +131,15 @@ func (a *AuthConfig) TokenEnv() string { return a.tokenEnv }
 
 // --- raw types for YAML unmarshaling ---
 
+type rawRoleConfig struct {
+	AllowedTools []string          `yaml:"allowed_tools"`
+	Credentials  map[string]string `yaml:"credentials"`
+}
+
 type rawConfig struct {
 	Server    rawServerConfig            `yaml:"server"`
 	Upstreams []rawUpstreamConfig        `yaml:"upstreams"`
-	AuthEnvs  map[string]map[string]string `yaml:"auth_envs"`
+	Roles     map[string]rawRoleConfig   `yaml:"roles"`
 }
 
 type rawServerConfig struct {
@@ -224,15 +238,17 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.upstreams[i] = u
 	}
 
-	for name, creds := range raw.AuthEnvs {
-		ae := AuthEnvConfig{
-			name:        name,
-			credentials: make(map[string]string, len(creds)),
+	for name, rawRole := range raw.Roles {
+		rc := RoleConfig{
+			name:         name,
+			allowedTools: make([]string, len(rawRole.AllowedTools)),
+			credentials:  make(map[string]string, len(rawRole.Credentials)),
 		}
-		for k, v := range creds {
-			ae.credentials[k] = v
+		copy(rc.allowedTools, rawRole.AllowedTools)
+		for k, v := range rawRole.Credentials {
+			rc.credentials[k] = v
 		}
-		cfg.authEnvs = append(cfg.authEnvs, ae)
+		cfg.roles = append(cfg.roles, rc)
 	}
 
 	return cfg, nil
@@ -267,16 +283,24 @@ func validate(raw rawConfig) error {
 		}
 	}
 
-	for envName, creds := range raw.AuthEnvs {
-		if envName == "" {
-			return fmt.Errorf("config: auth_envs: empty env name")
+	for roleName, role := range raw.Roles {
+		if roleName == "" {
+			return fmt.Errorf("config: roles: empty role name")
 		}
-		for upstreamName, envVar := range creds {
+		if len(role.AllowedTools) == 0 {
+			return fmt.Errorf("config: roles[%q]: allowed_tools is required", roleName)
+		}
+		for _, pattern := range role.AllowedTools {
+			if _, err := glob.Compile(pattern); err != nil {
+				return fmt.Errorf("config: roles[%q]: invalid glob pattern %q: %w", roleName, pattern, err)
+			}
+		}
+		for upstreamName, envVar := range role.Credentials {
 			if !upstreamNames[upstreamName] {
-				return fmt.Errorf("config: auth_envs[%q]: references unknown upstream %q", envName, upstreamName)
+				return fmt.Errorf("config: roles[%q]: references unknown upstream %q", roleName, upstreamName)
 			}
 			if envVar == "" {
-				return fmt.Errorf("config: auth_envs[%q]: empty env var for upstream %q", envName, upstreamName)
+				return fmt.Errorf("config: roles[%q]: empty env var for upstream %q", roleName, upstreamName)
 			}
 		}
 	}

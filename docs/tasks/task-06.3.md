@@ -1,7 +1,7 @@
-# Task 5.2: CLI Caller Management
+# Task 6.3: CLI Caller Management
 
 **Status:** not started
-**Depends on:** Task 5.1 (role-based access control), Task 6 (auth — CallerStore, SQLiteStore)
+**Depends on:** Task 6.2 (caller-role assignment), Task 6 (auth — CallerStore, SQLiteStore)
 **Needed by:** nothing (quality-of-life, replaces ad-hoc seed script)
 
 ---
@@ -10,7 +10,7 @@
 
 Add subcommands to the `stile` binary for managing callers and API keys from the command line. This replaces the throwaway `cmd/seed` script with proper CLI tooling that an operator can use in production.
 
-Under the role-based model (Task 5.1), callers are just named identities. Tool access and credentials are determined by the role assigned to each API key, which is defined in the YAML config.
+Under the role-based model (Task 6.1 + 6.2), callers are named identities with roles assigned directly. Tool access and credentials are determined by the caller's assigned roles, which are defined in the YAML config.
 
 ---
 
@@ -34,25 +34,42 @@ Prints confirmation on success. Returns non-zero exit code on error (duplicate n
 ### `stile add-key`
 
 ```bash
-stile add-key --caller angus --role web-tools --label "angus laptop"
+stile add-key --caller angus --label "angus laptop"
 ```
 
 - `--caller` (required): name of existing caller
-- `--role` (required): role this key grants — must match a role defined in config
 - `--label` (optional): human-readable label for the key
 - `--db` (optional): path to SQLite database
-- `--config` (optional): path to config file (used to validate role exists)
 
 Generates a cryptographically random API key with `sk-` prefix, hashes it with SHA-256, stores the hash, and prints the raw key **once**:
 
 ```
-API key for angus (role: web-tools):
+API key for angus:
   sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
 
 Store this key securely — it cannot be retrieved again.
 ```
 
-If `--config` is provided, validates that the role exists in config. Warns (but still creates) if not provided — the key is usable but the caller won't have any tool access until the role is defined in config.
+### `stile assign-role`
+
+```bash
+stile assign-role --caller angus --role web-tools
+```
+
+- `--caller` (required): name of existing caller
+- `--role` (required): role to assign — must match a role defined in config
+- `--db` (optional): path to SQLite database
+- `--config` (optional): path to config file (used to validate role exists)
+
+If `--config` is provided, validates that the role exists in config. Warns (but still creates) if not provided.
+
+### `stile unassign-role`
+
+```bash
+stile unassign-role --caller angus --role web-tools
+```
+
+Removes a role assignment from a caller.
 
 ### `stile list-callers`
 
@@ -60,11 +77,11 @@ If `--config` is provided, validates that the role exists in config. Warns (but 
 stile list-callers
 ```
 
-Lists all callers with their key count and roles. No secrets shown.
+Lists all callers with their key count and assigned roles. No secrets shown.
 
 ```
 NAME     KEYS  ROLES
-angus    2     web-tools, database
+angus    1     web-tools, database
 bob      1     full-access
 ```
 
@@ -82,7 +99,7 @@ Deletes the caller and all their API keys (CASCADE). Prints confirmation. Requir
 stile revoke-key --caller angus --label "angus laptop"
 ```
 
-Revokes a specific key by label. If no label given, lists all keys for the caller (showing label, role, created-at — never the key itself) and asks which to revoke.
+Revokes a specific key by label. If no label given, lists all keys for the caller (showing label, created-at — never the key itself) and asks which to revoke.
 
 ---
 
@@ -99,6 +116,12 @@ func main() {
             return
         case "add-key":
             runAddKey(os.Args[2:])
+            return
+        case "assign-role":
+            runAssignRole(os.Args[2:])
+            return
+        case "unassign-role":
+            runUnassignRole(os.Args[2:])
             return
         case "list-callers":
             runListCallers(os.Args[2:])
@@ -141,10 +164,12 @@ Once this task is complete, remove `cmd/seed/` — it's replaced by the real CLI
 2. **add-caller duplicate name:** → non-zero exit, error message
 3. **add-key generates valid key:** run subcommand → key hash in database, printed key starts with `sk-`, hashing printed key matches stored hash
 4. **add-key unknown caller:** → non-zero exit, error message
-5. **add-key validates role against config:** with `--config`, warns if role not in config
-6. **list-callers shows all:** create 2 callers with keys → output lists both with correct info and roles
-7. **remove-caller deletes:** create caller with key → remove → caller and keys gone
-8. **revoke-key removes key:** create caller with 2 keys → revoke one → one remains
+5. **assign-role works:** assign role to caller → role appears in caller's role list
+6. **assign-role validates against config:** with `--config`, warns if role not in config
+7. **unassign-role works:** unassign role → role removed from caller
+8. **list-callers shows all:** create 2 callers with roles → output lists both with correct info and roles
+9. **remove-caller deletes:** create caller with key and roles → remove → caller, keys, and role assignments gone
+10. **revoke-key removes key:** create caller with 2 keys → revoke one → one remains
 
 ### Build check
 

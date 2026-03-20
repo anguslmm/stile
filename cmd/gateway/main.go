@@ -79,7 +79,7 @@ func buildAuthOpts(cfg *config.Config) *server.Options {
 		log.Fatalf("open caller database: %v", err)
 	}
 
-	authenticator := auth.NewAuthenticator(store, cfg.AuthEnvs())
+	authenticator := auth.NewAuthenticator(store, cfg.Roles())
 
 	opts := &server.Options{
 		Authenticator: authenticator,

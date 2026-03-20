@@ -210,7 +210,7 @@ func TestSliceGettersReturnCopies(t *testing.T) {
 	}
 }
 
-func TestAuthEnvConfigLoads(t *testing.T) {
+func TestRoleConfigLoads(t *testing.T) {
 	yaml := `
 upstreams:
   - name: github
@@ -220,73 +220,126 @@ upstreams:
     transport: streamable-http
     url: https://mcp.notion.com
 
-auth_envs:
-  dev:
-    github: GITHUB_DEV_TOKEN
-    notion: NOTION_DEV_TOKEN
-  prod:
-    github: GITHUB_PROD_TOKEN
+roles:
+  web-tools:
+    allowed_tools:
+      - "github/*"
+      - "notion/*"
+    credentials:
+      github: GITHUB_DEV_TOKEN
+      notion: NOTION_DEV_TOKEN
+  database:
+    allowed_tools:
+      - "db_*"
 `
 	cfg, err := LoadBytes([]byte(yaml))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	envs := cfg.AuthEnvs()
-	if len(envs) != 2 {
-		t.Fatalf("expected 2 auth envs, got %d", len(envs))
+	roles := cfg.Roles()
+	if len(roles) != 2 {
+		t.Fatalf("expected 2 roles, got %d", len(roles))
 	}
 
-	// Find the dev env.
-	var dev *AuthEnvConfig
-	for i := range envs {
-		if envs[i].Name() == "dev" {
-			dev = &envs[i]
+	// Find the web-tools role.
+	var webTools *RoleConfig
+	for i := range roles {
+		if roles[i].Name() == "web-tools" {
+			webTools = &roles[i]
 		}
 	}
-	if dev == nil {
-		t.Fatal("missing dev auth env")
+	if webTools == nil {
+		t.Fatal("missing web-tools role")
 	}
-	creds := dev.Credentials()
+	tools := webTools.AllowedTools()
+	if len(tools) != 2 || tools[0] != "github/*" || tools[1] != "notion/*" {
+		t.Errorf("web-tools allowed_tools = %v, want [github/* notion/*]", tools)
+	}
+	creds := webTools.Credentials()
 	if creds["github"] != "GITHUB_DEV_TOKEN" {
-		t.Errorf("dev github credential = %q, want GITHUB_DEV_TOKEN", creds["github"])
+		t.Errorf("web-tools github credential = %q, want GITHUB_DEV_TOKEN", creds["github"])
 	}
 	if creds["notion"] != "NOTION_DEV_TOKEN" {
-		t.Errorf("dev notion credential = %q, want NOTION_DEV_TOKEN", creds["notion"])
+		t.Errorf("web-tools notion credential = %q, want NOTION_DEV_TOKEN", creds["notion"])
 	}
 }
 
-func TestAuthEnvUnknownUpstream(t *testing.T) {
+func TestRoleMissingAllowedTools(t *testing.T) {
 	yaml := `
 upstreams:
   - name: github
     transport: streamable-http
     url: https://mcp.github.com
 
-auth_envs:
-  dev:
-    nonexistent: SOME_TOKEN
+roles:
+  empty-role:
+    credentials:
+      github: GITHUB_TOKEN
 `
 	_, err := LoadBytes([]byte(yaml))
 	if err == nil {
-		t.Fatal("expected error for auth env referencing unknown upstream")
+		t.Fatal("expected error for role missing allowed_tools")
 	}
 }
 
-func TestAuthEnvEmptyEnvVar(t *testing.T) {
+func TestRoleInvalidGlobPattern(t *testing.T) {
 	yaml := `
 upstreams:
   - name: github
     transport: streamable-http
     url: https://mcp.github.com
 
-auth_envs:
-  dev:
-    github: ""
+roles:
+  bad-glob:
+    allowed_tools:
+      - "[invalid"
+    credentials:
+      github: GITHUB_TOKEN
 `
 	_, err := LoadBytes([]byte(yaml))
 	if err == nil {
-		t.Fatal("expected error for empty env var in auth env")
+		t.Fatal("expected error for invalid glob pattern in role")
+	}
+}
+
+func TestRoleUnknownUpstream(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+
+roles:
+  bad-ref:
+    allowed_tools:
+      - "*"
+    credentials:
+      nonexistent: SOME_TOKEN
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for role referencing unknown upstream")
+	}
+}
+
+func TestRoleEmptyEnvVar(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://mcp.github.com
+
+roles:
+  bad-env:
+    allowed_tools:
+      - "*"
+    credentials:
+      github: ""
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for empty env var in role")
 	}
 }
 

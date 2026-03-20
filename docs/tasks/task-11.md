@@ -1,7 +1,7 @@
 # Task 11: Admin API for Caller Management
 
 **Status:** not started
-**Depends on:** Task 5.1 (role-based access control), Task 5.2 (CLI — establishes CallerStore methods)
+**Depends on:** Task 6.1 (role-based access control), Task 6.2 (decouple roles from keys), Task 6.3 (CLI — establishes CallerStore methods)
 **Needed by:** nothing (optional, quality-of-life for operators)
 
 ---
@@ -158,7 +158,7 @@ Revoke a specific API key.
 
 ## 2. CallerStore Extensions
 
-The existing `SQLiteStore` needs additional methods beyond what Task 5.2 adds:
+The existing `SQLiteStore` needs additional methods beyond what Task 6.3 adds:
 
 ```go
 func (s *SQLiteStore) ListCallers() ([]CallerInfo, error)

@@ -13,17 +13,37 @@ import (
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
 
-// buildMockServer compiles the mock stdio server and returns the path to the binary.
-func buildMockServer(t *testing.T) string {
-	t.Helper()
-	binary := t.TempDir() + "/mock_stdio_server"
+// mockServerBinary is set by TestMain so the go build happens before any
+// parallel test execution (avoids build-cache lock contention with go test ./...).
+var mockServerBinary string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "stile-mock-server")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create temp dir: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(dir)
+
+	binary := dir + "/mock_stdio_server"
 	cmd := exec.Command("go", "build", "-o", binary, "./testdata/mock_stdio_server.go")
 	cmd.Dir = "."
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to build mock stdio server: %v", err)
+		fmt.Fprintf(os.Stderr, "build mock stdio server: %v\n", err)
+		os.Exit(1)
 	}
-	return binary
+	mockServerBinary = binary
+	os.Exit(m.Run())
+}
+
+// buildMockServer returns the path to the pre-built mock stdio server binary.
+func buildMockServer(t *testing.T) string {
+	t.Helper()
+	if mockServerBinary == "" {
+		t.Fatal("mock server binary not built (TestMain failed?)")
+	}
+	return mockServerBinary
 }
 
 func newStdioUpstream(t *testing.T, binary string) config.UpstreamConfig {

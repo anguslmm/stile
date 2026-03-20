@@ -2,27 +2,23 @@ package auth
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-
-	"github.com/gobwas/glob"
 
 	_ "modernc.org/sqlite"
 )
 
 const schema = `
 CREATE TABLE IF NOT EXISTS callers (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    name          TEXT NOT NULL UNIQUE,
-    allowed_tools TEXT NOT NULL,
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     caller_id   INTEGER NOT NULL REFERENCES callers(id) ON DELETE CASCADE,
     key_hash    BLOB NOT NULL UNIQUE,
-    auth_env    TEXT NOT NULL,
+    role        TEXT NOT NULL,
     label       TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -62,37 +58,47 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 // LookupByKey finds a caller by the SHA-256 hash of their API key.
+// Returns the caller name and the role from the matched key.
 func (s *SQLiteStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
-	var name, allowedToolsJSON, authEnv string
+	var name, role string
 	err := s.db.QueryRow(`
-		SELECT c.name, c.allowed_tools, k.auth_env
+		SELECT c.name, k.role
 		FROM api_keys k
 		JOIN callers c ON c.id = k.caller_id
 		WHERE k.key_hash = ?
-	`, hashedKey[:]).Scan(&name, &allowedToolsJSON, &authEnv)
+	`, hashedKey[:]).Scan(&name, &role)
 	if err != nil {
 		return nil, fmt.Errorf("auth: key not found")
 	}
 
-	var patterns []string
-	if err := json.Unmarshal([]byte(allowedToolsJSON), &patterns); err != nil {
-		return nil, fmt.Errorf("auth: parse allowed_tools: %w", err)
-	}
-
-	globs := make([]glob.Glob, len(patterns))
-	for i, p := range patterns {
-		g, err := glob.Compile(p)
-		if err != nil {
-			return nil, fmt.Errorf("auth: compile glob %q: %w", p, err)
-		}
-		globs[i] = g
-	}
-
 	return &Caller{
-		Name:         name,
-		AllowedTools: globs,
-		AuthEnv:      authEnv,
+		Name: name,
+		Role: role,
 	}, nil
+}
+
+// RolesForCaller returns all distinct roles assigned to a caller across all their keys.
+func (s *SQLiteStore) RolesForCaller(name string) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT k.role
+		FROM api_keys k
+		JOIN callers c ON c.id = k.caller_id
+		WHERE c.name = ?
+	`, name)
+	if err != nil {
+		return nil, fmt.Errorf("auth: query roles: %w", err)
+	}
+	defer rows.Close()
+
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, fmt.Errorf("auth: scan role: %w", err)
+		}
+		roles = append(roles, role)
+	}
+	return roles, rows.Err()
 }
 
 // HasCallers reports whether the database contains any callers.
@@ -105,29 +111,25 @@ func (s *SQLiteStore) HasCallers() (bool, error) {
 	return count > 0, nil
 }
 
-// AddCaller inserts a new caller with the given allowed tool patterns.
-func (s *SQLiteStore) AddCaller(name string, allowedTools []string) error {
-	toolsJSON, err := json.Marshal(allowedTools)
-	if err != nil {
-		return fmt.Errorf("auth: marshal allowed_tools: %w", err)
-	}
-	_, err = s.db.Exec("INSERT INTO callers (name, allowed_tools) VALUES (?, ?)", name, string(toolsJSON))
+// AddCaller inserts a new caller (a named identity).
+func (s *SQLiteStore) AddCaller(name string) error {
+	_, err := s.db.Exec("INSERT INTO callers (name) VALUES (?)", name)
 	if err != nil {
 		return fmt.Errorf("auth: insert caller: %w", err)
 	}
 	return nil
 }
 
-// AddKey inserts an API key hash for a caller with the given auth env.
-func (s *SQLiteStore) AddKey(callerName string, keyHash [32]byte, authEnv string, label string) error {
+// AddKey inserts an API key hash for a caller with the given role.
+func (s *SQLiteStore) AddKey(callerName string, keyHash [32]byte, role string, label string) error {
 	var callerID int64
 	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
 	if err != nil {
 		return fmt.Errorf("auth: caller %q not found", callerName)
 	}
 	_, err = s.db.Exec(
-		"INSERT INTO api_keys (caller_id, key_hash, auth_env, label) VALUES (?, ?, ?, ?)",
-		callerID, keyHash[:], authEnv, label,
+		"INSERT INTO api_keys (caller_id, key_hash, role, label) VALUES (?, ?, ?, ?)",
+		callerID, keyHash[:], role, label,
 	)
 	if err != nil {
 		return fmt.Errorf("auth: insert key: %w", err)

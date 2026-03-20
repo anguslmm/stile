@@ -3,6 +3,29 @@ server:
   db_path: "/tmp/stile-test.db"
 
 upstreams:
-  - name: fake
+  - name: fake-http
     transport: streamable-http
     url: http://localhost:9090/mcp
+
+  - name: local-stdio
+    transport: stdio
+    command: ["go", "run", "./internal/transport/testdata/mock_stdio_server.go"]
+
+roles:
+  http-only:
+    allowed_tools:
+      - "echo"
+      - "add"
+    credentials:
+      fake-http: FAKE_HTTP_TOKEN
+  stdio-only:
+    allowed_tools:
+      - "test_echo"
+    credentials:
+      local-stdio: STDIO_TOKEN
+  full-access:
+    allowed_tools:
+      - "*"
+    credentials:
+      fake-http: FAKE_HTTP_TOKEN
+      local-stdio: STDIO_TOKEN
