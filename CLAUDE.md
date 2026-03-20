@@ -39,6 +39,7 @@ Key abstraction: the `Transport` interface (`Send`, `ListTools`, `Close`, `Healt
 - **Config types are immutable.** Unexported fields, exported getters. Slice getters return copies.
 - **Correctness over brevity.** Go boilerplate is fine.
 - **Minimal dependencies.** stdlib where possible. External deps: `gopkg.in/yaml.v3`, `golang.org/x/time/rate`, `prometheus/client_golang`, `santhosh-tekuri/jsonschema`, `gobwas/glob`.
+- **Compile-time interface checks.** Every concrete type that implements an interface must have a `var _ Interface = (*Type)(nil)` assertion (or value literal for value-receiver types). Add these when creating new implementations.
 
 ## Git
 
