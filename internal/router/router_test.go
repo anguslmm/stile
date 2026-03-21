@@ -530,8 +530,7 @@ func TestAddUpstream(t *testing.T) {
 	mockB := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "beta"}},
 	}
-	cfgs := newConfigs("a", "b")
-	rt.AddUpstream("b", mockB, cfgs[1])
+	rt.AddUpstream("b", mockB)
 
 	// beta should now be resolvable.
 	route, err := rt.Resolve("beta")

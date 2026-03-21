@@ -159,7 +159,7 @@ func main() {
 		// Add new upstreams to router.
 		for _, ucfg := range newCfg.Upstreams() {
 			if t, ok := newTransports[ucfg.Name()]; ok {
-				rt.AddUpstream(ucfg.Name(), t, ucfg)
+				rt.AddUpstream(ucfg.Name(), t)
 			}
 		}
 
@@ -276,16 +276,7 @@ func buildTransports(cfg *config.Config, filter map[string]bool) (map[string]tra
 		if filter != nil && !filter[ucfg.Name()] {
 			continue
 		}
-		var t transport.Transport
-		var err error
-		switch ucfg.Transport() {
-		case "streamable-http":
-			t, err = transport.NewHTTPTransport(ucfg)
-		case "stdio":
-			t, err = transport.NewStdioTransport(ucfg)
-		default:
-			err = fmt.Errorf("unsupported transport type %q", ucfg.Transport())
-		}
+		t, err := transport.NewFromConfig(ucfg)
 		if err != nil {
 			if filter != nil {
 				// Reload path: clean up and return error.

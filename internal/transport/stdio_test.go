@@ -46,7 +46,7 @@ func buildMockServer(t *testing.T) string {
 	return mockServerBinary
 }
 
-func newStdioUpstream(t *testing.T, binary string) config.UpstreamConfig {
+func newStdioUpstream(t *testing.T, binary string) *config.StdioUpstreamConfig {
 	t.Helper()
 	yaml := `
 upstreams:
@@ -58,7 +58,7 @@ upstreams:
 	if err != nil {
 		t.Fatalf("failed to create test config: %v", err)
 	}
-	return cfg.Upstreams()[0]
+	return cfg.Upstreams()[0].(*config.StdioUpstreamConfig)
 }
 
 func TestStdioToolsList(t *testing.T) {
@@ -327,7 +327,7 @@ upstreams:
 	}
 
 	// NewStdioTransport should succeed (process not started yet).
-	tr, err := NewStdioTransport(cfg.Upstreams()[0])
+	tr, err := NewStdioTransport(cfg.Upstreams()[0].(*config.StdioUpstreamConfig))
 	if err != nil {
 		t.Fatalf("NewStdioTransport: %v", err)
 	}

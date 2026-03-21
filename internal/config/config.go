@@ -58,6 +58,93 @@ func ParseRateLimit(s string) (RateLimit, error) {
 	return RateLimit{rate: perSecond, burst: burst}, nil
 }
 
+// UpstreamConfig is a sealed interface representing an upstream's configuration.
+// The concrete types are *HTTPUpstreamConfig and *StdioUpstreamConfig.
+type UpstreamConfig interface {
+	upstreamConfig() // sealed — only types in this package can implement UpstreamConfig
+	Name() string
+	Tools() []string
+	RateLimit() *RateLimit
+}
+
+// HTTPUpstreamConfig is an UpstreamConfig for streamable-http upstreams.
+type HTTPUpstreamConfig struct {
+	name      string
+	url       string
+	auth      *AuthConfig
+	tools     []string
+	rateLimit *RateLimit
+}
+
+func (*HTTPUpstreamConfig) upstreamConfig() {}
+
+func (h *HTTPUpstreamConfig) Name() string         { return h.name }
+func (h *HTTPUpstreamConfig) URL() string           { return h.url }
+func (h *HTTPUpstreamConfig) Auth() *AuthConfig     { return h.auth }
+func (h *HTTPUpstreamConfig) RateLimit() *RateLimit { return h.rateLimit }
+
+// Tools returns a copy of the tools slice.
+func (h *HTTPUpstreamConfig) Tools() []string {
+	if h.tools == nil {
+		return nil
+	}
+	out := make([]string, len(h.tools))
+	copy(out, h.tools)
+	return out
+}
+
+// StdioUpstreamConfig is an UpstreamConfig for stdio upstreams.
+type StdioUpstreamConfig struct {
+	name      string
+	command   []string
+	env       map[string]string
+	tools     []string
+	rateLimit *RateLimit
+}
+
+func (*StdioUpstreamConfig) upstreamConfig() {}
+
+func (s *StdioUpstreamConfig) Name() string         { return s.name }
+func (s *StdioUpstreamConfig) RateLimit() *RateLimit { return s.rateLimit }
+
+// Command returns a copy of the command slice.
+func (s *StdioUpstreamConfig) Command() []string {
+	if s.command == nil {
+		return nil
+	}
+	out := make([]string, len(s.command))
+	copy(out, s.command)
+	return out
+}
+
+// Env returns a copy of the environment variable map.
+func (s *StdioUpstreamConfig) Env() map[string]string {
+	if s.env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(s.env))
+	for k, v := range s.env {
+		out[k] = v
+	}
+	return out
+}
+
+// Tools returns a copy of the tools slice.
+func (s *StdioUpstreamConfig) Tools() []string {
+	if s.tools == nil {
+		return nil
+	}
+	out := make([]string, len(s.tools))
+	copy(out, s.tools)
+	return out
+}
+
+// Compile-time interface satisfaction checks.
+var (
+	_ UpstreamConfig = (*HTTPUpstreamConfig)(nil)
+	_ UpstreamConfig = (*StdioUpstreamConfig)(nil)
+)
+
 // Config is immutable after construction via Load.
 type Config struct {
 	server            serverConfig
@@ -229,55 +316,6 @@ func (r *RoleConfig) RateLimit() *RateLimit { return r.rateLimit }
 // ToolRateLimit returns the per-caller-per-tool rate limit override for this role, or nil if unset.
 func (r *RoleConfig) ToolRateLimit() *RateLimit { return r.toolRateLimit }
 
-// UpstreamConfig provides read-only access to an upstream's settings.
-type UpstreamConfig struct {
-	name      string
-	url       string
-	command   []string
-	env       map[string]string
-	transport string
-	auth      *AuthConfig
-	tools     []string
-	rateLimit *RateLimit
-}
-
-func (u *UpstreamConfig) Name() string    { return u.name }
-func (u *UpstreamConfig) URL() string     { return u.url }
-func (u *UpstreamConfig) Transport() string { return u.transport }
-func (u *UpstreamConfig) Auth() *AuthConfig  { return u.auth }
-func (u *UpstreamConfig) RateLimit() *RateLimit { return u.rateLimit }
-
-// Env returns a copy of the environment variable map for stdio upstreams.
-func (u *UpstreamConfig) Env() map[string]string {
-	if u.env == nil {
-		return nil
-	}
-	out := make(map[string]string, len(u.env))
-	for k, v := range u.env {
-		out[k] = v
-	}
-	return out
-}
-
-// Command returns a copy of the command slice.
-func (u *UpstreamConfig) Command() []string {
-	if u.command == nil {
-		return nil
-	}
-	out := make([]string, len(u.command))
-	copy(out, u.command)
-	return out
-}
-
-// Tools returns a copy of the tools slice.
-func (u *UpstreamConfig) Tools() []string {
-	if u.tools == nil {
-		return nil
-	}
-	out := make([]string, len(u.tools))
-	copy(out, u.tools)
-	return out
-}
 
 // AuthConfig provides read-only access to upstream auth settings.
 type AuthConfig struct {
@@ -436,39 +474,54 @@ func convert(raw rawConfig) (*Config, error) {
 
 	cfg.upstreams = make([]UpstreamConfig, len(raw.Upstreams))
 	for i, ru := range raw.Upstreams {
-		u := UpstreamConfig{
-			name:      ru.Name,
-			url:       ru.URL,
-			transport: ru.Transport,
-		}
-		if ru.Command != nil {
-			u.command = make([]string, len(ru.Command))
-			copy(u.command, ru.Command)
-		}
-		if ru.Env != nil {
-			u.env = make(map[string]string, len(ru.Env))
-			for k, v := range ru.Env {
-				u.env[k] = v
-			}
-		}
-		if ru.Auth != nil {
-			u.auth = &AuthConfig{
-				authType: ru.Auth.Type,
-				tokenEnv: ru.Auth.TokenEnv,
-			}
-		}
-		if ru.Tools != nil {
-			u.tools = make([]string, len(ru.Tools))
-			copy(u.tools, ru.Tools)
-		}
+		var rl *RateLimit
 		if ru.RateLimit != "" {
-			rl, err := ParseRateLimit(ru.RateLimit)
+			parsed, err := ParseRateLimit(ru.RateLimit)
 			if err != nil {
 				return nil, fmt.Errorf("config: upstream %q: %w", ru.Name, err)
 			}
-			u.rateLimit = &rl
+			rl = &parsed
 		}
-		cfg.upstreams[i] = u
+
+		var tools []string
+		if ru.Tools != nil {
+			tools = make([]string, len(ru.Tools))
+			copy(tools, ru.Tools)
+		}
+
+		switch ru.Transport {
+		case "streamable-http":
+			h := &HTTPUpstreamConfig{
+				name:      ru.Name,
+				url:       ru.URL,
+				tools:     tools,
+				rateLimit: rl,
+			}
+			if ru.Auth != nil {
+				h.auth = &AuthConfig{
+					authType: ru.Auth.Type,
+					tokenEnv: ru.Auth.TokenEnv,
+				}
+			}
+			cfg.upstreams[i] = h
+		case "stdio":
+			s := &StdioUpstreamConfig{
+				name:      ru.Name,
+				tools:     tools,
+				rateLimit: rl,
+			}
+			if ru.Command != nil {
+				s.command = make([]string, len(ru.Command))
+				copy(s.command, ru.Command)
+			}
+			if ru.Env != nil {
+				s.env = make(map[string]string, len(ru.Env))
+				for k, v := range ru.Env {
+					s.env[k] = v
+				}
+			}
+			cfg.upstreams[i] = s
+		}
 	}
 
 	// Use ordered role names to preserve YAML document order.

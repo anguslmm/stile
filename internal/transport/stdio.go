@@ -42,9 +42,9 @@ type StdioTransport struct {
 	startupTimeout  time.Duration
 }
 
-// NewStdioTransport creates a StdioTransport from the given upstream config.
+// NewStdioTransport creates a StdioTransport from the given stdio upstream config.
 // The process is not started until the first request.
-func NewStdioTransport(cfg config.UpstreamConfig) (*StdioTransport, error) {
+func NewStdioTransport(cfg *config.StdioUpstreamConfig) (*StdioTransport, error) {
 	cmd := cfg.Command()
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("transport/stdio: command is required")

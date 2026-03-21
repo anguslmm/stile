@@ -383,13 +383,7 @@ upstreams:
 	// Create transports and router.
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		var tr transport.Transport
-		switch ucfg.Transport() {
-		case "streamable-http":
-			tr, err = transport.NewHTTPTransport(ucfg)
-		case "stdio":
-			tr, err = transport.NewStdioTransport(ucfg)
-		}
+		tr, err := transport.NewFromConfig(ucfg)
 		if err != nil {
 			t.Fatalf("create transport %q: %v", ucfg.Name(), err)
 		}

@@ -30,8 +30,8 @@ type HTTPTransport struct {
 	healthy           bool
 }
 
-// NewHTTPTransport creates an HTTPTransport from the given upstream config.
-func NewHTTPTransport(cfg config.UpstreamConfig) (*HTTPTransport, error) {
+// NewHTTPTransport creates an HTTPTransport from the given HTTP upstream config.
+func NewHTTPTransport(cfg *config.HTTPUpstreamConfig) (*HTTPTransport, error) {
 	t := &HTTPTransport{
 		url:           cfg.URL(),
 		client: &http.Client{

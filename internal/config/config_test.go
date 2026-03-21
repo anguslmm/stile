@@ -55,39 +55,39 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 
 	// HTTP upstream.
-	u := upstreams[0]
-	if u.Name() != "http-upstream" {
-		t.Errorf("name = %q, want %q", u.Name(), "http-upstream")
+	h, ok := upstreams[0].(*HTTPUpstreamConfig)
+	if !ok {
+		t.Fatalf("expected *HTTPUpstreamConfig, got %T", upstreams[0])
 	}
-	if u.Transport() != "streamable-http" {
-		t.Errorf("transport = %q, want %q", u.Transport(), "streamable-http")
+	if h.Name() != "http-upstream" {
+		t.Errorf("name = %q, want %q", h.Name(), "http-upstream")
 	}
-	if u.URL() != "https://mcp.example.com/v1" {
-		t.Errorf("url = %q, want %q", u.URL(), "https://mcp.example.com/v1")
+	if h.URL() != "https://mcp.example.com/v1" {
+		t.Errorf("url = %q, want %q", h.URL(), "https://mcp.example.com/v1")
 	}
-	if u.Auth() == nil {
+	if h.Auth() == nil {
 		t.Fatal("auth is nil, want non-nil")
 	}
-	if u.Auth().Type() != "bearer" {
-		t.Errorf("auth type = %q, want %q", u.Auth().Type(), "bearer")
+	if h.Auth().Type() != "bearer" {
+		t.Errorf("auth type = %q, want %q", h.Auth().Type(), "bearer")
 	}
-	if u.Auth().TokenEnv() != "MCP_TOKEN" {
-		t.Errorf("token_env = %q, want %q", u.Auth().TokenEnv(), "MCP_TOKEN")
+	if h.Auth().TokenEnv() != "MCP_TOKEN" {
+		t.Errorf("token_env = %q, want %q", h.Auth().TokenEnv(), "MCP_TOKEN")
 	}
-	tools := u.Tools()
+	tools := h.Tools()
 	if len(tools) != 2 || tools[0] != "search" || tools[1] != "summarize" {
 		t.Errorf("tools = %v, want [search summarize]", tools)
 	}
 
 	// Stdio upstream.
-	u = upstreams[1]
-	if u.Name() != "stdio-upstream" {
-		t.Errorf("name = %q, want %q", u.Name(), "stdio-upstream")
+	s, ok := upstreams[1].(*StdioUpstreamConfig)
+	if !ok {
+		t.Fatalf("expected *StdioUpstreamConfig, got %T", upstreams[1])
 	}
-	if u.Transport() != "stdio" {
-		t.Errorf("transport = %q, want %q", u.Transport(), "stdio")
+	if s.Name() != "stdio-upstream" {
+		t.Errorf("name = %q, want %q", s.Name(), "stdio-upstream")
 	}
-	cmd := u.Command()
+	cmd := s.Command()
 	if len(cmd) != 3 || cmd[0] != "python" {
 		t.Errorf("command = %v, want [python -m mcp_server]", cmd)
 	}
@@ -197,13 +197,12 @@ func TestSliceGettersReturnCopies(t *testing.T) {
 
 	// Mutating the returned slice should not affect the config.
 	upstreams := cfg.Upstreams()
-	upstreams[0] = UpstreamConfig{}
+	upstreams[0] = nil
 	if cfg.Upstreams()[0].Name() != "http-upstream" {
 		t.Error("mutating Upstreams() return value affected internal state")
 	}
 
-	u := cfg.Upstreams()[0]
-	tools := u.Tools()
+	tools := cfg.Upstreams()[0].Tools()
 	tools[0] = "mutated"
 	if cfg.Upstreams()[0].Tools()[0] != "search" {
 		t.Error("mutating Tools() return value affected internal state")

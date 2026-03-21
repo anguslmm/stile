@@ -15,8 +15,8 @@ import (
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
 
-// newTestUpstream creates an UpstreamConfig via LoadBytes for testing.
-func newTestUpstream(t *testing.T, url string, auth bool) config.UpstreamConfig {
+// newTestUpstream creates an HTTPUpstreamConfig via LoadBytes for testing.
+func newTestUpstream(t *testing.T, url string, auth bool) *config.HTTPUpstreamConfig {
 	t.Helper()
 	yaml := fmt.Sprintf(`
 upstreams:
@@ -34,8 +34,7 @@ upstreams:
 	if err != nil {
 		t.Fatalf("failed to create test config: %v", err)
 	}
-	upstreams := cfg.Upstreams()
-	return upstreams[0]
+	return cfg.Upstreams()[0].(*config.HTTPUpstreamConfig)
 }
 
 func TestJSONResponseRoundTrip(t *testing.T) {

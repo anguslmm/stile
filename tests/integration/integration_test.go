@@ -916,7 +916,7 @@ upstreams:
 	// Build real HTTP transport
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		tr, err := transport.NewHTTPTransport(ucfg)
+		tr, err := transport.NewFromConfig(ucfg)
 		if err != nil {
 			t.Fatalf("create transport: %v", err)
 		}
@@ -1035,7 +1035,7 @@ upstreams:
 
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		tr, err := transport.NewHTTPTransport(ucfg)
+		tr, err := transport.NewFromConfig(ucfg)
 		if err != nil {
 			t.Fatalf("create transport: %v", err)
 		}
@@ -1343,7 +1343,7 @@ upstreams:
 
 	trs := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		tr, err := transport.NewHTTPTransport(ucfg)
+		tr, err := transport.NewFromConfig(ucfg)
 		if err != nil {
 			t.Fatalf("create transport: %v", err)
 		}

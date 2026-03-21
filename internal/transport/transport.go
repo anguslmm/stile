@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
 
@@ -121,6 +122,18 @@ var (
 	_ TransportResult = (*JSONResult)(nil)
 	_ TransportResult = (*StreamResult)(nil)
 )
+
+// NewFromConfig creates the appropriate Transport for the given UpstreamConfig.
+func NewFromConfig(cfg config.UpstreamConfig) (Transport, error) {
+	switch c := cfg.(type) {
+	case *config.HTTPUpstreamConfig:
+		return NewHTTPTransport(c)
+	case *config.StdioUpstreamConfig:
+		return NewStdioTransport(c)
+	default:
+		return nil, fmt.Errorf("transport: unsupported config type %T", cfg)
+	}
+}
 
 // Transport is the interface for communicating with an MCP upstream.
 type Transport interface {

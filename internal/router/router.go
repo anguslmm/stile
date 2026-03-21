@@ -26,7 +26,6 @@ type Route struct {
 type Upstream struct {
 	Name        string
 	Transport   transport.Transport
-	Config      config.UpstreamConfig
 	Tools       []transport.ToolSchema
 	Stale       bool
 	LastRefresh time.Time
@@ -78,7 +77,6 @@ func New(transports map[string]transport.Transport, configs []config.UpstreamCon
 		rt.upstreams = append(rt.upstreams, &Upstream{
 			Name:      cfg.Name(),
 			Transport: t,
-			Config:    cfg,
 		})
 	}
 
@@ -247,12 +245,11 @@ func (rt *RouteTable) StartBackgroundRefresh(interval time.Duration) {
 }
 
 // AddUpstream adds a new upstream to the route table and refreshes it.
-func (rt *RouteTable) AddUpstream(name string, t transport.Transport, cfg config.UpstreamConfig) {
+func (rt *RouteTable) AddUpstream(name string, t transport.Transport) {
 	rt.mu.Lock()
 	rt.upstreams = append(rt.upstreams, &Upstream{
 		Name:      name,
 		Transport: t,
-		Config:    cfg,
 	})
 	rt.mu.Unlock()
 
