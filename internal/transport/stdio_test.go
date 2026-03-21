@@ -9,6 +9,10 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
@@ -311,6 +315,45 @@ func TestStdioConcurrentRequests(t *testing.T) {
 
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestStdioWithTracingContext(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	binary := buildMockServer(t)
+	ucfg := newStdioUpstream(t, binary)
+
+	tr, err := NewStdioTransport(ucfg)
+	if err != nil {
+		t.Fatalf("NewStdioTransport: %v", err)
+	}
+	defer tr.Close()
+
+	// Create a span — stdio transport should work without error
+	// (no header injection attempted since there are no HTTP headers).
+	tp := sdktrace.NewTracerProvider()
+	tracer := tp.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "test-span")
+	defer span.End()
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "ping",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	result, err := tr.RoundTrip(ctx, req)
+	if err != nil {
+		t.Fatalf("RoundTrip with tracing context: %v", err)
+	}
+
+	jr, ok := result.(*JSONResult)
+	if !ok {
+		t.Fatalf("expected *JSONResult, got %T", result)
+	}
+	if jr.Response().Error != nil {
+		t.Errorf("unexpected error: %v", jr.Response().Error)
 	}
 }
 

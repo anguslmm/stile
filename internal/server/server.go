@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/anguslmm/stile/internal/auth"
@@ -69,6 +71,9 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 
 			var authSpan trace.Span
 			if s.tracer != nil {
+				// Extract W3C Trace Context before creating the auth span
+				// so it becomes a child of the agent's trace.
+				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 				ctx, authSpan = s.tracer.Start(ctx, "auth")
 			}
 
@@ -156,6 +161,10 @@ const maxBatchSize = 100
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if s.tracer != nil {
+		// Extract W3C Trace Context if auth middleware hasn't already done so.
+		if !trace.SpanFromContext(ctx).SpanContext().IsValid() {
+			ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
+		}
 		var span trace.Span
 		ctx, span = s.tracer.Start(ctx, "handleMCP")
 		defer span.End()

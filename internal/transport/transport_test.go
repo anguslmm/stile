@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
@@ -389,6 +393,89 @@ func Test400DoesNotMarkUnhealthy(t *testing.T) {
 
 	if !tr.Healthy() {
 		t.Fatal("expected upstream to remain healthy after 400 responses")
+	}
+}
+
+func TestOutboundTraceparentInjection(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	upstream := newTestUpstream(t, srv.URL, false)
+	tr, err := NewHTTPTransport(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a span so there's trace context to inject.
+	tp := sdktrace.NewTracerProvider()
+	tracer := tp.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "test-span")
+	defer span.End()
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/method",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	_, err = tr.RoundTrip(ctx, req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+
+	if gotTraceparent == "" {
+		t.Fatal("expected traceparent header to be injected, got empty")
+	}
+
+	// Verify it starts with the W3C version prefix "00-" and contains the span's trace ID.
+	traceID := span.SpanContext().TraceID().String()
+	if !strings.HasPrefix(gotTraceparent, "00-"+traceID+"-") {
+		t.Errorf("traceparent = %q, want prefix 00-%s-", gotTraceparent, traceID)
+	}
+}
+
+func TestNoTraceparentWithoutSpan(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	upstream := newTestUpstream(t, srv.URL, false)
+	tr, err := NewHTTPTransport(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/method",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	// No span in context — should not inject traceparent.
+	_, err = tr.RoundTrip(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+
+	if gotTraceparent != "" {
+		t.Errorf("expected no traceparent header without span, got %q", gotTraceparent)
 	}
 }
 

@@ -1,6 +1,6 @@
 # Task 21: Trace Context Propagation
 
-**Status:** todo
+**Status:** done
 **Depends on:** 16
 
 ---

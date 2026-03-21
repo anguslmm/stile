@@ -82,7 +82,7 @@ The `Transport` interface hides whether the underlying transport is an HTTP POST
 When tracing is enabled (`telemetry.traces.enabled: true`), the request path is instrumented with OpenTelemetry spans:
 
 ```
-[handleMCP]                              <- root span per request
+[handleMCP]                              <- root span per request (or child of agent's span)
   +- [auth]                              <- child span (auth middleware)
   +- [dispatch]                          <- child span (method dispatch)
   |    +- [route + rate limit]           <- child span (routing + rate limit check)
@@ -95,6 +95,14 @@ Key span attributes: `mcp.method`, `mcp.tool`, `mcp.upstream`, `mcp.caller`, `mc
 The `StreamResult.WriteResponse` span is the critical one for SSE streams — if the stream dies mid-flight, the span records the error and duration.
 
 All structured log messages on the request path include `trace_id` and `span_id` fields for correlation.
+
+### Trace context propagation (W3C)
+
+Stile propagates W3C Trace Context (`traceparent`/`tracestate` headers) so that traces are continuous across agent → Stile → upstream:
+
+- **Inbound**: `handleMCP` extracts the `traceparent` header from the agent's request. If present, Stile's spans become children of the agent's trace. If absent, a new root trace is created.
+- **Outbound**: `HTTPTransport.RoundTrip` injects the current `traceparent` header into requests sent to HTTP upstreams, so the upstream can continue the trace.
+- **Stdio limitation**: Stdio transports communicate via JSON-RPC over stdin/stdout — there are no HTTP headers. Trace context cannot be propagated to stdio upstreams. Stile's span for the stdio round-trip is the leaf span in the trace.
 
 ## 8. Return path
 
