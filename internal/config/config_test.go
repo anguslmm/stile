@@ -670,9 +670,6 @@ upstreams:
 	if cfg.Telemetry().Traces().Enabled() {
 		t.Error("tracing should be disabled by default")
 	}
-	if cfg.Telemetry().Metrics().Backend() != "prometheus" {
-		t.Errorf("metrics backend = %q, want prometheus", cfg.Telemetry().Metrics().Backend())
-	}
 }
 
 func TestTelemetryConfigExplicit(t *testing.T) {
@@ -682,8 +679,6 @@ telemetry:
     enabled: true
     endpoint: "tempo:4318"
     sample_rate: 0.5
-  metrics:
-    backend: prometheus
 
 upstreams:
   - name: svc
@@ -719,23 +714,6 @@ upstreams:
 	_, err := LoadBytes([]byte(yaml))
 	if err == nil {
 		t.Fatal("expected error for sample_rate > 1.0")
-	}
-}
-
-func TestTelemetryInvalidMetricsBackend(t *testing.T) {
-	yaml := `
-telemetry:
-  metrics:
-    backend: influx
-
-upstreams:
-  - name: svc
-    transport: streamable-http
-    url: https://example.com
-`
-	_, err := LoadBytes([]byte(yaml))
-	if err == nil {
-		t.Fatal("expected error for invalid metrics backend")
 	}
 }
 

@@ -18,8 +18,6 @@ telemetry:
     enabled: false              # opt-in (default: false)
     endpoint: "localhost:4318"  # OTLP HTTP endpoint (default when enabled)
     sample_rate: 1.0            # 0.0 to 1.0 (default: 1.0 when enabled)
-  metrics:
-    backend: prometheus         # only "prometheus" for now
 ```
 
 When `traces.enabled` is `false` or omitted, Stile uses a no-op tracer with zero overhead. Metrics and logs work regardless of the tracing setting.

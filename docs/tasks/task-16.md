@@ -103,8 +103,6 @@ telemetry:
     enabled: false              # opt-in
     endpoint: "localhost:4318"
     sample_rate: 1.0
-  metrics:
-    backend: prometheus         # only prometheus for now, future: otlp
 ```
 
 ---

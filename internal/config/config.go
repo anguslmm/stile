@@ -167,18 +167,13 @@ type auditConfig struct {
 }
 
 type telemetryConfig struct {
-	traces  tracesConfig
-	metrics metricsConfig
+	traces tracesConfig
 }
 
 type tracesConfig struct {
 	enabled    bool
 	endpoint   string
 	sampleRate float64
-}
-
-type metricsConfig struct {
-	backend string
 }
 
 type rateLimitDefaults struct {
@@ -245,7 +240,6 @@ func (c *Config) Telemetry() TelemetryConfig {
 			endpoint:   c.telemetry.traces.endpoint,
 			sampleRate: c.telemetry.traces.sampleRate,
 		},
-		metrics: MetricsConfig{backend: c.telemetry.metrics.backend},
 	}
 }
 
@@ -305,15 +299,11 @@ func (a AuditConfig) Database() string { return a.database }
 
 // TelemetryConfig provides read-only access to telemetry settings.
 type TelemetryConfig struct {
-	traces  TracesConfig
-	metrics MetricsConfig
+	traces TracesConfig
 }
 
 // Traces returns the tracing configuration.
 func (t TelemetryConfig) Traces() TracesConfig { return t.traces }
-
-// Metrics returns the metrics configuration.
-func (t TelemetryConfig) Metrics() MetricsConfig { return t.metrics }
 
 // TracesConfig provides read-only access to trace settings.
 type TracesConfig struct {
@@ -330,14 +320,6 @@ func (t TracesConfig) Endpoint() string { return t.endpoint }
 
 // SampleRate returns the trace sample rate (0.0 to 1.0).
 func (t TracesConfig) SampleRate() float64 { return t.sampleRate }
-
-// MetricsConfig provides read-only access to metrics settings.
-type MetricsConfig struct {
-	backend string
-}
-
-// Backend returns the metrics backend (e.g. "prometheus").
-func (m MetricsConfig) Backend() string { return m.backend }
 
 type serverConfig struct {
 	address         string
@@ -416,18 +398,13 @@ type rawAuditConfig struct {
 }
 
 type rawTelemetryConfig struct {
-	Traces  *rawTracesConfig  `yaml:"traces"`
-	Metrics *rawMetricsConfig `yaml:"metrics"`
+	Traces *rawTracesConfig `yaml:"traces"`
 }
 
 type rawTracesConfig struct {
 	Enabled    bool    `yaml:"enabled"`
 	Endpoint   string  `yaml:"endpoint"`
 	SampleRate float64 `yaml:"sample_rate"`
-}
-
-type rawMetricsConfig struct {
-	Backend string `yaml:"backend"`
 }
 
 type rawConfig struct {
@@ -680,21 +657,15 @@ func convert(raw rawConfig) (*Config, error) {
 	}
 
 	// Parse telemetry config with defaults.
-	cfg.telemetry.metrics.backend = "prometheus"
-	if raw.Telemetry != nil {
-		if raw.Telemetry.Traces != nil {
-			cfg.telemetry.traces.enabled = raw.Telemetry.Traces.Enabled
-			cfg.telemetry.traces.endpoint = raw.Telemetry.Traces.Endpoint
-			cfg.telemetry.traces.sampleRate = raw.Telemetry.Traces.SampleRate
-			if cfg.telemetry.traces.enabled && cfg.telemetry.traces.endpoint == "" {
-				cfg.telemetry.traces.endpoint = "localhost:4318"
-			}
-			if cfg.telemetry.traces.sampleRate == 0 && cfg.telemetry.traces.enabled {
-				cfg.telemetry.traces.sampleRate = 1.0
-			}
+	if raw.Telemetry != nil && raw.Telemetry.Traces != nil {
+		cfg.telemetry.traces.enabled = raw.Telemetry.Traces.Enabled
+		cfg.telemetry.traces.endpoint = raw.Telemetry.Traces.Endpoint
+		cfg.telemetry.traces.sampleRate = raw.Telemetry.Traces.SampleRate
+		if cfg.telemetry.traces.enabled && cfg.telemetry.traces.endpoint == "" {
+			cfg.telemetry.traces.endpoint = "localhost:4318"
 		}
-		if raw.Telemetry.Metrics != nil && raw.Telemetry.Metrics.Backend != "" {
-			cfg.telemetry.metrics.backend = raw.Telemetry.Metrics.Backend
+		if cfg.telemetry.traces.sampleRate == 0 && cfg.telemetry.traces.enabled {
+			cfg.telemetry.traces.sampleRate = 1.0
 		}
 	}
 
@@ -747,19 +718,10 @@ func validate(raw rawConfig) error {
 		return fmt.Errorf("config: audit.database is required when audit is enabled")
 	}
 
-	if raw.Telemetry != nil {
-		if raw.Telemetry.Traces != nil {
-			sr := raw.Telemetry.Traces.SampleRate
-			if sr < 0 || sr > 1 {
-				return fmt.Errorf("config: telemetry.traces.sample_rate must be between 0.0 and 1.0, got %f", sr)
-			}
-		}
-		if raw.Telemetry.Metrics != nil {
-			switch raw.Telemetry.Metrics.Backend {
-			case "", "prometheus":
-			default:
-				return fmt.Errorf("config: telemetry.metrics.backend must be \"prometheus\", got %q", raw.Telemetry.Metrics.Backend)
-			}
+	if raw.Telemetry != nil && raw.Telemetry.Traces != nil {
+		sr := raw.Telemetry.Traces.SampleRate
+		if sr < 0 || sr > 1 {
+			return fmt.Errorf("config: telemetry.traces.sample_rate must be between 0.0 and 1.0, got %f", sr)
 		}
 	}
 

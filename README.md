@@ -133,8 +133,6 @@ telemetry:
     enabled: false              # opt-in (default: false)
     endpoint: "localhost:4318"  # OTLP HTTP endpoint
     sample_rate: 1.0            # 0.0 to 1.0
-  metrics:
-    backend: prometheus         # only "prometheus" for now
 ```
 
 ## Authentication Setup
