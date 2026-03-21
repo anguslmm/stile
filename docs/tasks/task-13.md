@@ -1,6 +1,6 @@
 # Task 13: HTTP Transport Hardening
 
-**Status:** todo
+**Status:** done
 **Depends on:** 12
 **Needed by:** 15
 

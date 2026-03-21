@@ -28,7 +28,9 @@ type SSEReader struct {
 
 // NewSSEReader creates an SSEReader wrapping the given reader.
 func NewSSEReader(r io.Reader) *SSEReader {
-	return &SSEReader{scanner: bufio.NewScanner(r)}
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 0, 64*1024), 1<<20) // 1 MB max line
+	return &SSEReader{scanner: s}
 }
 
 // Next returns the next SSE event from the stream.

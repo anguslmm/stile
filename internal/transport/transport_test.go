@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -283,6 +284,72 @@ func TestSSEReaderMultiLineData(t *testing.T) {
 	want := "line1\nline2\nline3"
 	if ev.Data != want {
 		t.Errorf("data = %q, want %q", ev.Data, want)
+	}
+}
+
+func TestHTTPClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Sleep longer than the header timeout but short enough for the test.
+		time.Sleep(2 * time.Second)
+	}))
+	defer srv.Close()
+
+	upstream := newTestUpstream(t, srv.URL, false)
+	tr, _ := NewHTTPTransport(upstream)
+	// Override with a short timeout for the test.
+	tr.client.Transport.(*http.Transport).ResponseHeaderTimeout = 50 * time.Millisecond
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/hang",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	_, err := tr.RoundTrip(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "Timeout") {
+		t.Fatalf("expected timeout-related error, got: %v", err)
+	}
+}
+
+func TestSSEReaderOversizedLine(t *testing.T) {
+	// Create a line larger than 1 MB — should produce an error, not a panic.
+	bigLine := "data: " + strings.Repeat("x", 1<<20+100) + "\n\n"
+	reader := NewSSEReader(strings.NewReader(bigLine))
+
+	_, err := reader.Next()
+	if err == nil {
+		t.Fatal("expected error for oversized SSE line, got nil")
+	}
+}
+
+func Test400DoesNotMarkUnhealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	upstream := newTestUpstream(t, srv.URL, false)
+	tr, _ := NewHTTPTransport(upstream)
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/method",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	// Send many 400s — should never mark unhealthy.
+	for i := 0; i < 10; i++ {
+		_, err := tr.RoundTrip(context.Background(), req)
+		if err == nil {
+			t.Fatal("expected error for 400 response")
+		}
+	}
+
+	if !tr.Healthy() {
+		t.Fatal("expected upstream to remain healthy after 400 responses")
 	}
 }
 

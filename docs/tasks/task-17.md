@@ -1,144 +1,140 @@
-# Task 17: Redis-backed Rate Limiting
+# Task 17: Configurable Database Backend with Postgres Support
 
 **Status:** todo
-**Depends on:** 14, 16
+**Depends on:** 14, 15, 16
 
 ---
 
 ## Goal
 
-Replace the in-memory token bucket rate limiter with a Redis-backed implementation so that rate limits are enforced globally across multiple Stile instances. This is the primary blocker for horizontal scaling.
+Make the database backend configurable so operators can choose between SQLite (current default, good for single-node) and PostgreSQL (for production/multi-instance deployments). Both the auth store and the audit store should support this.
 
 ---
 
-## Problem
+## 1. Define a store interface and refactor SQLite behind it
 
-The current `RateLimiter` in `internal/policy/ratelimit.go` uses in-memory `rate.Limiter` maps. Each instance tracks its own counters independently. With N instances behind a load balancer, a caller's effective rate limit is N times the configured limit.
+The auth store already has a `CallerStore` interface (`internal/auth/auth.go:51-55`), but it's minimal — only `LookupByKey`, `RolesForCaller`, and `HasCallers`. The `SQLiteStore` has many more methods (AddCaller, DeleteCaller, AddKey, ListKeys, AssignRole, etc.) that are called directly by the admin handler and CLI.
+
+**Steps:**
+
+1. Define a full `Store` interface in `internal/auth/store.go` covering all operations the admin handler and CLI use:
+   ```go
+   type Store interface {
+       CallerStore  // LookupByKey, RolesForCaller, HasCallers
+       AddCaller(name string) error
+       DeleteCaller(name string) error
+       ListCallers() ([]CallerSummary, error)
+       GetCaller(name string) (*CallerDetail, error)
+       AddKey(caller string, hash [32]byte, label string) error
+       ListKeys(caller string) ([]KeyInfo, error)
+       DeleteKey(caller, label string) error
+       RevokeKey(caller, label string) error
+       KeyCountForCaller(name string) (int, error)
+       AssignRole(caller, role string) error
+       UnassignRole(caller, role string) error
+       Close() error
+   }
+   ```
+
+2. Rename `SQLiteStore` methods to satisfy this interface (they likely already do, just need the interface declaration and compile-time check).
+
+3. Update admin handler, CLI, and main.go to accept `Store` instead of `*SQLiteStore`.
 
 ---
 
-## 1. Define a RateLimiter interface
+## 2. Add config support for database type
 
-Extract the current concrete `RateLimiter` behind an interface so the proxy and server don't care about the backend:
-
-```go
-// internal/policy/policy.go
-type RateLimiter interface {
-    Allow(caller, tool, upstream string, roles []string) *Denial
-}
-```
-
-Rename the current implementation to `LocalRateLimiter` and add a compile-time check.
-
----
-
-## 2. Add Redis rate limiter config
-
-Extend the config to support a Redis backend for rate limiting:
+Update the YAML config to support a `database` section under `server`:
 
 ```yaml
-rate_limits:
-  backend: redis          # "local" (default) or "redis"
-  redis:
-    address: "localhost:6379"
-    password: ""
-    db: 0
-    key_prefix: "stile:"  # namespace keys to avoid collisions
-  defaults:
-    caller: "100/min"
-    tool: "20/sec"
+server:
+  address: ":8080"
+  database:
+    driver: sqlite        # or "postgres"
+    dsn: stile.db         # file path for sqlite, connection string for postgres
 ```
 
-When `backend` is `local` or omitted, use the existing in-memory implementation. When `backend` is `redis`, use the new Redis implementation.
+For backwards compatibility, continue to support the existing `db_path` field as shorthand for `driver: sqlite, dsn: <path>`.
+
+**Config changes:**
+- Add `DatabaseConfig` type with `Driver()` and `DSN()` getters
+- Add to `ServerConfig`
+- Validate driver is "sqlite" or "postgres"
+- If `db_path` is set and `database` is not, treat as `driver: sqlite, dsn: db_path`
 
 ---
 
-## 3. Implement Redis rate limiter
+## 3. Implement Postgres store
 
-Create `internal/policy/redis.go`:
+Create `internal/auth/postgres.go`:
 
-Use the sliding window counter pattern with Redis:
+1. Implement the `Store` interface using `database/sql` with the `pgx` driver (`github.com/jackc/pgx/v5/stdlib`)
+2. Translate the SQLite schema to Postgres:
+   - `INTEGER PRIMARY KEY AUTOINCREMENT` -> `SERIAL PRIMARY KEY`
+   - `TEXT` stays `TEXT`
+   - `DATETIME DEFAULT CURRENT_TIMESTAMP` -> `TIMESTAMPTZ DEFAULT NOW()`
+   - `UNIQUE(caller_id, role)` and foreign key constraints stay the same
+3. Handle Postgres-specific error detection (replace `strings.Contains(err.Error(), "UNIQUE constraint failed")` — this is already flagged as a code health issue in task 15 for sentinel errors, which makes this easier)
+4. Use `$1, $2` placeholders instead of `?` (or use a query builder)
 
+**Constructor:**
 ```go
-type RedisRateLimiter struct {
-    client    *redis.Client
-    keyPrefix string
-    // ... same config fields as LocalRateLimiter for rates/bursts
-}
+func NewPostgresStore(dsn string) (*PostgresStore, error)
 ```
 
-**Algorithm:** Use a Lua script for atomic sliding window rate limiting:
-
-```lua
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])  -- window in seconds
-local now = tonumber(ARGV[3])
-
--- Remove expired entries
-redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
-local count = redis.call('ZCARD', key)
-
-if count < limit then
-    redis.call('ZADD', key, now, now .. ':' .. math.random())
-    redis.call('EXPIRE', key, window)
-    return 1  -- allowed
-end
-return 0  -- denied
-```
-
-**Key structure:**
-- Caller limit: `stile:rl:caller:{callerName}`
-- Tool limit: `stile:rl:tool:{callerName}:{toolName}`
-- Upstream limit: `stile:rl:upstream:{upstreamName}`
-
-**Three levels** (same as current):
-1. Per-caller rate
-2. Per-caller-per-tool rate
-3. Per-upstream rate (global across all callers)
-
-Each `Allow()` call checks all three atomically. If any denies, the request is rejected.
+Apply the same hardening from task 14 (connection pool config, busy timeout equivalent via `context.WithTimeout`).
 
 ---
 
-## 4. Add Redis dependency
+## 4. Implement Postgres audit store
 
-Add `github.com/redis/go-redis/v9` to `go.mod`.
+Create `internal/audit/postgres.go`:
 
-This is only imported when Redis is configured — consider a build tag or lazy import so that deployments using local rate limiting don't need a Redis connection.
+1. The audit store interface is simpler — just `Log()` and `Close()`
+2. Same schema translation as above
+3. Same constructor pattern
 
 ---
 
 ## 5. Factory function
 
+Add a factory that reads the config and returns the right store:
+
 ```go
-// internal/policy/factory.go
-func NewRateLimiterFromConfig(cfg *config.Config) (RateLimiter, error) {
-    switch cfg.RateLimitBackend() {
-    case "redis":
-        return NewRedisRateLimiter(cfg)
+// internal/auth/store.go
+func OpenStore(cfg config.DatabaseConfig) (Store, error) {
+    switch cfg.Driver() {
+    case "sqlite", "":
+        return NewSQLiteStore(cfg.DSN())
+    case "postgres":
+        return NewPostgresStore(cfg.DSN())
     default:
-        return NewLocalRateLimiter(cfg), nil
+        return nil, fmt.Errorf("auth: unsupported database driver %q", cfg.Driver())
     }
 }
 ```
 
-Update `main.go` to use the factory.
+Same pattern for audit store.
+
+Update `main.go` and `cli.go` to use the factory.
 
 ---
 
-## 6. Graceful degradation
+## 6. Update CLI commands
 
-If Redis is unavailable:
-- Log an error at startup and refuse to start (fail-closed) — don't silently fall back to local limiting, as that would silently break the multi-instance guarantee
-- If Redis becomes unavailable at runtime, `Allow()` should return a denial (fail-closed) and log the error, rather than allowing unlimited traffic
+The CLI commands (`add-caller`, `add-key`, etc.) currently use `--db` for the SQLite path. Add `--driver` flag (default "sqlite") and rename `--db` to `--dsn` (keep `--db` as an alias for backwards compat):
+
+```
+stile add-caller --name foo --driver postgres --dsn "postgres://localhost/stile"
+stile add-caller --name foo --db stile.db  # still works, implies sqlite
+```
 
 ---
 
 ## Verification
 
-- All existing rate limit tests pass with `LocalRateLimiter` (renamed)
-- Add unit tests for `RedisRateLimiter` using miniredis (`github.com/alicebob/miniredis/v2`) for an in-process Redis
-- Add integration test: two instances sharing Redis enforce a single global limit
-- Test fail-closed behavior when Redis is down
-- Test config parsing for both backends
+- All existing SQLite tests pass unchanged
+- Add integration tests for Postgres store (skip if no Postgres available, use `STILE_TEST_POSTGRES_DSN` env var)
+- Test factory function with both drivers
+- Test backwards compatibility: `db_path: foo.db` in config still works
+- Test config validation rejects unknown drivers

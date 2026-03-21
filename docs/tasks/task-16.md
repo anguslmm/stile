@@ -1,140 +1,138 @@
-# Task 16: Configurable Database Backend with Postgres Support
+# Task 16: OpenTelemetry Observability (Traces, Metrics Migration, Log Correlation)
 
 **Status:** todo
-**Depends on:** 14, 15
+**Depends on:** 15
+**Needed by:** 17
 
 ---
 
 ## Goal
 
-Make the database backend configurable so operators can choose between SQLite (current default, good for single-node) and PostgreSQL (for production/multi-instance deployments). Both the auth store and the audit store should support this.
+Add distributed tracing via OpenTelemetry, migrate existing Prometheus metrics to the OTel API (still exported as Prometheus), and correlate structured logs with traces. This closes the observability gap where streaming errors (e.g. SSE streams dying mid-flight) are invisible to metrics and hard to diagnose from logs alone.
 
 ---
 
-## 1. Define a store interface and refactor SQLite behind it
+## 1. Add OTel trace SDK and instrument the request path
 
-The auth store already has a `CallerStore` interface (`internal/auth/auth.go:51-55`), but it's minimal — only `LookupByKey`, `RolesForCaller`, and `HasCallers`. The `SQLiteStore` has many more methods (AddCaller, DeleteCaller, AddKey, ListKeys, AssignRole, etc.) that are called directly by the admin handler and CLI.
+**Dependencies:** `go.opentelemetry.io/otel`, `go.opentelemetry.io/otel/sdk/trace`, `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`
 
-**Steps:**
-
-1. Define a full `Store` interface in `internal/auth/store.go` covering all operations the admin handler and CLI use:
-   ```go
-   type Store interface {
-       CallerStore  // LookupByKey, RolesForCaller, HasCallers
-       AddCaller(name string) error
-       DeleteCaller(name string) error
-       ListCallers() ([]CallerSummary, error)
-       GetCaller(name string) (*CallerDetail, error)
-       AddKey(caller string, hash [32]byte, label string) error
-       ListKeys(caller string) ([]KeyInfo, error)
-       DeleteKey(caller, label string) error
-       RevokeKey(caller, label string) error
-       KeyCountForCaller(name string) (int, error)
-       AssignRole(caller, role string) error
-       UnassignRole(caller, role string) error
-       Close() error
-   }
-   ```
-
-2. Rename `SQLiteStore` methods to satisfy this interface (they likely already do, just need the interface declaration and compile-time check).
-
-3. Update admin handler, CLI, and main.go to accept `Store` instead of `*SQLiteStore`.
-
----
-
-## 2. Add config support for database type
-
-Update the YAML config to support a `database` section under `server`:
+Add a tracer provider in `main.go`, configured via a new `telemetry` config section:
 
 ```yaml
-server:
-  address: ":8080"
-  database:
-    driver: sqlite        # or "postgres"
-    dsn: stile.db         # file path for sqlite, connection string for postgres
+telemetry:
+  traces:
+    enabled: true
+    endpoint: "localhost:4318"   # OTLP HTTP endpoint (Tempo, Jaeger, etc.)
+    sample_rate: 1.0             # 0.0 to 1.0
 ```
 
-For backwards compatibility, continue to support the existing `db_path` field as shorthand for `driver: sqlite, dsn: <path>`.
+If `telemetry.traces.enabled` is false or omitted, use a no-op tracer (zero overhead).
 
-**Config changes:**
-- Add `DatabaseConfig` type with `Driver()` and `DSN()` getters
-- Add to `ServerConfig`
-- Validate driver is "sqlite" or "postgres"
-- If `db_path` is set and `database` is not, treat as `driver: sqlite, dsn: db_path`
+Instrument the request path with spans:
 
----
-
-## 3. Implement Postgres store
-
-Create `internal/auth/postgres.go`:
-
-1. Implement the `Store` interface using `database/sql` with the `pgx` driver (`github.com/jackc/pgx/v5/stdlib`)
-2. Translate the SQLite schema to Postgres:
-   - `INTEGER PRIMARY KEY AUTOINCREMENT` -> `SERIAL PRIMARY KEY`
-   - `TEXT` stays `TEXT`
-   - `DATETIME DEFAULT CURRENT_TIMESTAMP` -> `TIMESTAMPTZ DEFAULT NOW()`
-   - `UNIQUE(caller_id, role)` and foreign key constraints stay the same
-3. Handle Postgres-specific error detection (replace `strings.Contains(err.Error(), "UNIQUE constraint failed")` — this is already flagged as a code health issue in task 15 for sentinel errors, which makes this easier)
-4. Use `$1, $2` placeholders instead of `?` (or use a query builder)
-
-**Constructor:**
-```go
-func NewPostgresStore(dsn string) (*PostgresStore, error)
+```
+[handleMCP]                              <- root span per request
+  +- [auth]                              <- child span
+  +- [dispatch]                          <- child span
+  |    +- [route + rate limit]
+  |    +- [upstream.RoundTrip]           <- child span, covers HTTP call to upstream
+  +- [StreamResult.WriteResponse]        <- child span if SSE, covers the stream copy loop
 ```
 
-Apply the same hardening from task 14 (connection pool config, busy timeout equivalent via `context.WithTimeout`).
+Key span attributes: `mcp.method`, `mcp.tool`, `mcp.upstream`, `mcp.caller`, `mcp.status`.
+
+The critical span is `WriteResponse` for SSE streams -- if the stream dies mid-flight, the span records the error and duration, making the failure visible in traces.
 
 ---
 
-## 4. Implement Postgres audit store
+## 2. Migrate Prometheus metrics to OTel metrics API
 
-Create `internal/audit/postgres.go`:
+**Dependencies:** `go.opentelemetry.io/otel/exporters/prometheus`
 
-1. The audit store interface is simpler — just `Log()` and `Close()`
-2. Same schema translation as above
-3. Same constructor pattern
+Replace the direct `prometheus/client_golang` metric definitions in `internal/metrics/` with OTel meter equivalents:
+
+- `prometheus.NewCounterVec(...)` -> `meter.Int64Counter(...)`
+- `prometheus.NewHistogramVec(...)` -> `meter.Float64Histogram(...)`
+
+Use the OTel Prometheus exporter bridge so the existing `/metrics` scrape endpoint continues to work unchanged. No backend changes required.
+
+Update `internal/metrics/metrics.go` to initialize via OTel. The metric names and labels should stay the same to avoid breaking existing dashboards.
 
 ---
 
-## 5. Factory function
+## 3. Add trace-correlated structured logging
 
-Add a factory that reads the config and returns the right store:
+Create a thin `slog.Handler` wrapper that extracts the trace ID and span ID from the context and injects them as log attributes automatically:
 
 ```go
-// internal/auth/store.go
-func OpenStore(cfg config.DatabaseConfig) (Store, error) {
-    switch cfg.Driver() {
-    case "sqlite", "":
-        return NewSQLiteStore(cfg.DSN())
-    case "postgres":
-        return NewPostgresStore(cfg.DSN())
-    default:
-        return nil, fmt.Errorf("auth: unsupported database driver %q", cfg.Driver())
+// internal/logging/tracehandler.go
+type TraceHandler struct {
+    inner slog.Handler
+}
+
+func (h *TraceHandler) Handle(ctx context.Context, r slog.Record) error {
+    span := trace.SpanFromContext(ctx)
+    if span.SpanContext().IsValid() {
+        r.AddAttrs(
+            slog.String("trace_id", span.SpanContext().TraceID().String()),
+            slog.String("span_id", span.SpanContext().SpanID().String()),
+        )
     }
+    return h.inner.Handle(ctx, r)
 }
 ```
 
-Same pattern for audit store.
+Wire this into the `slog` setup in `main.go`. Existing `slog.InfoContext(ctx, ...)` calls will automatically get trace correlation. For call sites that currently use `slog.Info(...)` (no ctx), update the hot-path ones (request handling, proxy, transport) to use `slog.InfoContext`.
 
-Update `main.go` and `cli.go` to use the factory.
+Also fix the `log.Printf` in `StreamResult.WriteResponse` (`transport.go:104`) -- change it to `slog.ErrorContext` with tool/upstream context so stream errors are properly structured and trace-correlated.
 
 ---
 
-## 6. Update CLI commands
+## 4. Config and lifecycle
 
-The CLI commands (`add-caller`, `add-key`, etc.) currently use `--db` for the SQLite path. Add `--driver` flag (default "sqlite") and rename `--db` to `--dsn` (keep `--db` as an alias for backwards compat):
+Add tracer provider setup and shutdown to `main.go`:
 
+- Initialize the tracer provider after config load
+- Register it as the global tracer provider
+- Shut it down in the graceful shutdown sequence (flushes pending spans)
+
+Config section:
+```yaml
+telemetry:
+  traces:
+    enabled: false              # opt-in
+    endpoint: "localhost:4318"
+    sample_rate: 1.0
+  metrics:
+    backend: prometheus         # only prometheus for now, future: otlp
 ```
-stile add-caller --name foo --driver postgres --dsn "postgres://localhost/stile"
-stile add-caller --name foo --db stile.db  # still works, implies sqlite
-```
+
+---
+
+## 5. Documentation
+
+Update `docs/request-flow.md` to reflect the new span structure in the request path.
+
+Add a `docs/observability.md` guide covering:
+
+- **What Stile exports:** OTLP traces + Prometheus metrics, with trace-correlated structured logs
+- **Configuration reference:** the `telemetry` config section with examples
+- **Deployment patterns:**
+  - Direct export: point `endpoint` at any OTLP-compatible receiver (Datadog Agent, Tempo, etc.)
+  - OTel Collector sidecar: point `endpoint` at the Collector, which handles routing, batching, tail sampling, and backend auth. Include a recommended Collector config with tail sampling (keep 100% of error traces, sample baseline traffic)
+  - Prometheus metrics: no change, `/metrics` endpoint works as before
+- **Head vs. tail sampling:** explain that `sample_rate` in Stile's config controls head sampling (coarse volume reduction), while tail sampling (e.g. "keep all error traces") is configured in the Collector
+
+Link to this guide from the README.
 
 ---
 
 ## Verification
 
-- All existing SQLite tests pass unchanged
-- Add integration tests for Postgres store (skip if no Postgres available, use `STILE_TEST_POSTGRES_DSN` env var)
-- Test factory function with both drivers
-- Test backwards compatibility: `db_path: foo.db` in config still works
-- Test config validation rejects unknown drivers
+- Existing tests pass (no-op tracer by default)
+- `/metrics` endpoint still serves Prometheus format with the same metric names
+- Add test: spans are created for a tools/call request (use a recording SpanExporter)
+- Add test: SSE stream error produces a span with error status
+- Add test: log output includes trace_id and span_id when a span is active
+- Add test: no trace fields in logs when tracing is disabled
+- Manual: send traffic with tracing enabled, verify traces appear in Jaeger/Tempo

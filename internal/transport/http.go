@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -33,7 +34,11 @@ type HTTPTransport struct {
 func NewHTTPTransport(cfg config.UpstreamConfig) (*HTTPTransport, error) {
 	t := &HTTPTransport{
 		url:           cfg.URL(),
-		client:        &http.Client{},
+		client: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
+		},
 		failThreshold: 3,
 		healthy:       true,
 	}
@@ -72,7 +77,11 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
-		t.recordFailure()
+		if resp.StatusCode >= 500 {
+			t.recordFailure()
+		} else {
+			t.recordSuccess()
+		}
 		return nil, fmt.Errorf("transport/http: upstream returned status %d", resp.StatusCode)
 	}
 

@@ -1,83 +1,110 @@
-# Task 19: Horizontal Scaling Documentation and Stdio Guidance
+# Task 19: Config Reload Broadcast
 
 **Status:** todo
-**Depends on:** 16, 17, 18
+**Depends on:** 17, 18
 
 ---
 
 ## Goal
 
-Document how to deploy Stile in a multi-instance configuration, including the architectural constraints around stdio transports, and provide guidance for operators scaling beyond a single node.
+When one Stile instance reloads its config (via SIGHUP or the admin `/admin/reload` endpoint), broadcast the event so all other instances reload too. Without this, operators must SIGHUP every instance individually, which is error-prone and leaves instances running different configs.
 
 ---
 
-## 1. Create `docs/horizontal-scaling.md`
+## Problem
 
-Write an operations guide covering:
-
-### Architecture overview
-
-- Stile is designed to run as multiple stateless instances behind a load balancer
-- Shared state (auth, audit) lives in Postgres
-- Shared rate limiting uses Redis
-- Config reload broadcast keeps instances in sync
-- Each instance independently health-checks its upstreams
-
-### Prerequisites
-
-- Postgres database (task 16) — required for shared auth/audit
-- Redis instance (task 17) — required for global rate limiting
-- Load balancer (any — nginx, HAProxy, ALB, etc.)
-
-### Config example
-
-Full multi-instance config example with Postgres, Redis, and broadcast enabled.
-
-### Stdio transport considerations
-
-**This is the key guidance to document clearly:**
-
-- HTTP/Streamable-HTTP upstreams work seamlessly — all instances connect to the same remote MCP servers
-- Stdio upstreams spawn a **local child process per instance**. This means:
-  - N instances = N copies of each stdio MCP server running
-  - Each copy maintains independent state (if the tool server is stateful)
-  - This is fine for stateless/lightweight tools (file readers, calculators, etc.)
-  - For expensive or stateful tools, **wrap the stdio server in an HTTP adapter** and point Stile at it as an HTTP upstream instead
-- Recommend: for production multi-instance deployments, prefer HTTP upstreams exclusively
-
-### Recommended stdio-to-HTTP wrapper pattern
-
-Document or link to a simple wrapper pattern:
-```
-stdio MCP server → thin HTTP wrapper (runs as a sidecar or service) → Stile connects via HTTP
-```
-
-Mention existing community tools like `mcp-proxy` or `supergateway` if applicable, or provide a minimal example.
-
-### Load balancer configuration
-
-- No sticky sessions required (all state is in Postgres/Redis)
-- Health check endpoint: `GET /healthz` (returns 200 when process is alive)
-- Readiness endpoint: `GET /readyz` (returns 200 when at least one upstream is healthy)
-- Recommended: route health checks to `/healthz`, readiness to `/readyz`
-
-### Scaling guidelines
-
-- **CPU-bound**: each instance handles proxying independently; scale horizontally as needed
-- **Memory**: primary memory consumers are the tool cache (small) and in-flight request bodies. Set body size limits (task 12) to cap per-request memory
-- **Redis**: rate limiter adds ~3 Redis round-trips per request (caller, tool, upstream checks). Use Redis pipelining or a Lua script to reduce to 1 round-trip
-- **Postgres**: auth lookups are per-request but cached by the caller's API key hash. Connection pooling (task 14) keeps this efficient
+Config reload is currently triggered per-instance via SIGHUP or the admin API. In a multi-instance deployment, only the targeted instance reloads. The others continue running the old config until manually signaled, leading to divergent behavior.
 
 ---
 
-## 2. Update README
+## 1. Choose a broadcast mechanism
 
-Add a "Scaling" section to the main README linking to the horizontal scaling doc, with a one-line summary: "Stile supports multi-instance deployment with Postgres and Redis — see docs/horizontal-scaling.md."
+Support two backends, matching what's already available in the deployment:
+
+### Option A: Postgres LISTEN/NOTIFY (if using Postgres for auth)
+
+- After a successful reload, publish: `NOTIFY stile_reload`
+- Each instance listens: `LISTEN stile_reload`
+- On notification, trigger the existing `reload()` closure
+- Zero additional dependencies — uses the Postgres connection already present
+
+### Option B: Redis pub/sub (if using Redis for rate limiting)
+
+- After a successful reload, publish to channel `stile:reload`
+- Each instance subscribes to `stile:reload`
+- On message, trigger the existing `reload()` closure
+- Zero additional dependencies — uses the Redis connection already present
+
+---
+
+## 2. Config
+
+```yaml
+server:
+  reload_broadcast: auto  # "auto" | "postgres" | "redis" | "none"
+```
+
+- `auto` (default): use Postgres if configured, else Redis if configured, else none
+- `none`: disable broadcast (single-instance or manual SIGHUP)
+
+---
+
+## 3. Implementation
+
+Create `internal/broadcast/broadcast.go`:
+
+```go
+type Broadcaster interface {
+    // Publish sends a reload signal to all instances.
+    Publish(ctx context.Context) error
+    // Subscribe returns a channel that receives a value when a reload is triggered.
+    Subscribe(ctx context.Context) (<-chan struct{}, error)
+    Close() error
+}
+```
+
+Implementations:
+- `internal/broadcast/postgres.go` — uses `pgx` connection for LISTEN/NOTIFY
+- `internal/broadcast/redis.go` — uses go-redis pub/sub
+
+---
+
+## 4. Wire into main.go
+
+After a successful reload (both SIGHUP and admin endpoint paths), call `broadcaster.Publish()`.
+
+At startup, call `broadcaster.Subscribe()` and start a goroutine that triggers `reload()` on each received message. Add deduplication: if this instance just published the reload, don't re-trigger it.
+
+```go
+go func() {
+    for range reloadCh {
+        slog.Info("reload broadcast received, reloading config...")
+        result, err := reload(context.Background())
+        if err != nil {
+            slog.Error("broadcast-triggered reload failed", "error", err)
+        } else {
+            slog.Info("broadcast-triggered reload complete",
+                "upstreams_added", result.UpstreamsAdded,
+                "upstreams_removed", result.UpstreamsRemoved,
+            )
+        }
+    }
+}()
+```
+
+---
+
+## 5. Graceful shutdown
+
+On shutdown, unsubscribe and close the broadcaster connection cleanly.
 
 ---
 
 ## Verification
 
-- Doc review: have someone unfamiliar with the codebase follow the guide
-- Verify all referenced config fields and endpoints exist
-- Verify example config is valid YAML that passes config loading
+- Test Postgres LISTEN/NOTIFY broadcast with two subscribers
+- Test Redis pub/sub broadcast with two subscribers
+- Test deduplication: publishing instance doesn't double-reload
+- Test `auto` selection logic
+- Test `none` disables broadcast
+- Test graceful shutdown unsubscribes cleanly
