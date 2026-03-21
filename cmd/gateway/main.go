@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/anguslmm/stile/internal/admin"
@@ -80,7 +79,7 @@ func main() {
 
 	m := metrics.New()
 
-	transports, err := buildTransports(cfg, nil)
+	transports, err := buildTransports(cfg)
 	if err != nil {
 		slog.Error("create transports failed", "error", err)
 		os.Exit(1)
@@ -119,139 +118,25 @@ func main() {
 	healthChecker := buildHealthChecker(rt, m)
 	healthChecker.Start()
 
-	// Build reload closure — captures everything it needs.
-	var reloadMu sync.Mutex
-	reload := func(ctx context.Context) (*server.ReloadResult, error) {
-		reloadMu.Lock()
-		defer reloadMu.Unlock()
-
-		newCfg, err := config.Load(*configPath)
-		if err != nil {
-			return nil, fmt.Errorf("load config: %w", err)
-		}
-
-		// Diff upstreams against the router's current list (not the original config,
-		// which may be stale after prior reloads).
-		oldUpstreams := make(map[string]bool)
-		for _, name := range rt.Upstreams() {
-			oldUpstreams[name] = true
-		}
-		newUpstreams := make(map[string]bool)
-		for _, u := range newCfg.Upstreams() {
-			newUpstreams[u.Name()] = true
-		}
-
-		var added, removed []string
-		for name := range newUpstreams {
-			if !oldUpstreams[name] {
-				added = append(added, name)
-			}
-		}
-		for name := range oldUpstreams {
-			if !newUpstreams[name] {
-				removed = append(removed, name)
-			}
-		}
-
-		// Create transports for added upstreams.
-		filter := make(map[string]bool, len(added))
-		for _, n := range added {
-			filter[n] = true
-		}
-		newTransports, err := buildTransports(newCfg, filter)
-		if err != nil {
-			return nil, fmt.Errorf("create transports for new upstreams: %w", err)
-		}
-
-		// Apply changes atomically (at this point, all prep has succeeded).
-
-		// Remove old upstreams from router.
-		for _, name := range removed {
-			rt.RemoveUpstream(name)
-		}
-
-		// Add new upstreams to router.
-		for _, ucfg := range newCfg.Upstreams() {
-			if t, ok := newTransports[ucfg.Name()]; ok {
-				rt.AddUpstream(ucfg.Name(), t)
-			}
-		}
-
-		// Update rate limiter.
-		newRL, err := policy.NewRateLimiterFromConfig(newCfg)
-		if err != nil {
-			return nil, fmt.Errorf("create rate limiter: %w", err)
-		}
-		handler.SetRateLimiter(newRL)
-
-		// Update authenticator if auth is configured.
-		if opts != nil && opts.Authenticator != nil {
-			dbCfg := newCfg.Server().Database()
-			if dbCfg.Driver() != "" || dbCfg.DSN() != "" {
-				store, err := auth.OpenStore(dbCfg)
-				if err != nil {
-					slog.Error("reload: failed to open caller database", "error", err)
-				} else {
-					newAuth := auth.NewAuthenticator(store, newCfg.Roles())
-					opts.Authenticator = newAuth
-				}
-			}
-		}
-
-		// Update health checker with current upstreams.
-		upstreamInfos := buildUpstreamInfos(rt)
-		healthChecker.UpdateUpstreams(upstreamInfos)
-		healthChecker.CheckNow(context.Background())
-
-		// Update logging level.
-		setupLogger(newCfg)
-
-		slog.Info("config reload applied",
-			"upstreams_added", added,
-			"upstreams_removed", removed,
-		)
-
-		return &server.ReloadResult{
-			Status:           "ok",
-			UpstreamsAdded:   added,
-			UpstreamsRemoved: removed,
-		}, nil
-	}
-
 	if opts == nil {
 		opts = &server.Options{}
 	}
 	opts.HealthChecker = healthChecker
-	opts.ReloadFunc = reload
 	opts.Tracer = tp.Tracer()
 
 	// Create admin handler if auth is configured (store is available).
 	if callerStore != nil {
-		opts.AdminHandler = admin.NewHandler(callerStore, rt, reload)
+		opts.AdminHandler = admin.NewHandler(callerStore, rt)
 	}
 
 	srv := server.New(cfg, handler, rt, m, opts)
 
-	// Signal handling: SIGINT/SIGTERM for shutdown, SIGHUP for reload.
+	// Signal handling: SIGINT/SIGTERM for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		for sig := range sigCh {
-			if sig == syscall.SIGHUP {
-				slog.Info("received SIGHUP, reloading config...")
-				result, err := reload(context.Background())
-				if err != nil {
-					slog.Error("config reload failed", "error", err)
-				} else {
-					slog.Info("config reloaded",
-						"upstreams_added", result.UpstreamsAdded,
-						"upstreams_removed", result.UpstreamsRemoved,
-					)
-				}
-				continue
-			}
-
+		for range sigCh {
 			// SIGINT or SIGTERM: graceful shutdown.
 			slog.Info("shutting down...")
 			ctx, cancel := context.WithTimeout(context.Background(), cfg.Server().ShutdownTimeout())
@@ -292,27 +177,13 @@ func main() {
 	}
 }
 
-// buildTransports creates transports for upstreams in cfg. If filter is non-nil,
-// only upstreams whose names are in the filter are built. If filter is nil, all
-// upstreams are built. On the startup path (nil filter), build errors are logged
-// and skipped. On the reload path (non-nil filter), any error causes cleanup and
-// an error return.
-func buildTransports(cfg *config.Config, filter map[string]bool) (map[string]transport.Transport, error) {
+// buildTransports creates transports for all upstreams in cfg.
+// Build errors are logged and the upstream is skipped.
+func buildTransports(cfg *config.Config) (map[string]transport.Transport, error) {
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
-		if filter != nil && !filter[ucfg.Name()] {
-			continue
-		}
 		t, err := transport.NewFromConfig(ucfg)
 		if err != nil {
-			if filter != nil {
-				// Reload path: clean up and return error.
-				for _, created := range transports {
-					created.Close()
-				}
-				return nil, fmt.Errorf("upstream %q: %w", ucfg.Name(), err)
-			}
-			// Startup path: log and skip.
 			slog.Warn("skip upstream", "upstream", ucfg.Name(), "error", err)
 			continue
 		}

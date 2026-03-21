@@ -30,7 +30,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | done |
 | 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | done |
 | 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | todo |
-| 18.1 | Remove config hot-reload mechanism | [task-18.1.md](tasks/task-18.1.md) | todo |
+| 18.1 | Remove config hot-reload mechanism | [task-18.1.md](tasks/task-18.1.md) | done |
 | 20 | TLS and mTLS support | [task-20.md](tasks/task-20.md) | todo |
 | 21 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-21.md](tasks/task-21.md) | todo |
 | 22 | Trace context propagation | [task-22.md](tasks/task-22.md) | todo |

@@ -19,8 +19,7 @@ The Go HTTP server routes it to the handler registered at `server.go:76`.
 ## 3. Auth (`server.go` -> `auth.go`)
 
 If auth is configured, the closure fires:
-- Grab `s.authenticator` under read lock (swappable for config reload)
-- Call `a.Authenticate(r)` which:
+- Call `s.authenticator.Authenticate(r)` which:
   - Extracts the `Bearer` token from the `Authorization` header
   - SHA-256 hashes it
   - Looks up the hash in the database store -> gets the caller name
@@ -105,7 +104,7 @@ Agent
 POST /mcp
   |
   v
-Auth closure ---- s.authenticator (swappable via mutex/atomic)
+Auth closure ---- s.authenticator
   |                 |-- Authenticate: Bearer token -> SHA-256 -> database lookup -> Caller
   |                 |-- Caller set in context
   v

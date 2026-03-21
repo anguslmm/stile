@@ -16,7 +16,6 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/router"
-	"github.com/anguslmm/stile/internal/server"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
@@ -70,7 +69,7 @@ func (m *mockTransport) Healthy() bool { return true }
 
 func newTestServer(t *testing.T, store *auth.SQLiteStore, rt *router.RouteTable) *httptest.Server {
 	t.Helper()
-	h := NewHandler(store, rt, nil)
+	h := NewHandler(store, rt)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	return httptest.NewServer(mux)
@@ -78,7 +77,7 @@ func newTestServer(t *testing.T, store *auth.SQLiteStore, rt *router.RouteTable)
 
 func newTestServerWithAuth(t *testing.T, store *auth.SQLiteStore, rt *router.RouteTable, adminKey string) *httptest.Server {
 	t.Helper()
-	h := NewHandler(store, rt, nil)
+	h := NewHandler(store, rt)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	adminHash := sha256.Sum256([]byte(adminKey))
@@ -694,31 +693,3 @@ func TestRefreshEndpoint(t *testing.T) {
 	}
 }
 
-// --- Test: Reload endpoint ---
-
-func TestReloadEndpoint(t *testing.T) {
-	store := newTestStore(t)
-	rt := newTestRouter(t)
-
-	reloadCalled := false
-	reloadFunc := func(_ context.Context) (*server.ReloadResult, error) {
-		reloadCalled = true
-		return &server.ReloadResult{Status: "ok"}, nil
-	}
-
-	h := NewHandler(store, rt, reloadFunc)
-	mux := http.NewServeMux()
-	h.Register(mux)
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
-	resp := doRequest(t, "POST", ts.URL+"/admin/reload", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	if !reloadCalled {
-		t.Error("expected reload function to be called")
-	}
-}

@@ -209,7 +209,6 @@ type testGateway struct {
 	Registry     *prometheus.Registry
 	HealthCheck  *health.Checker
 	AdminKey     string
-	ReloadFunc   server.ReloadFunc
 }
 
 type gatewayOpt func(*gatewayBuilder)
@@ -318,15 +317,8 @@ func newTestGateway(t *testing.T, opts ...gatewayOpt) *testGateway {
 	t.Cleanup(func() { healthChecker.Stop() })
 	serverOpts.HealthChecker = healthChecker
 
-	// Build reload func (simplified for tests — just refreshes tools).
-	reloadFunc := func(ctx context.Context) (*server.ReloadResult, error) {
-		rt.Refresh(ctx)
-		return &server.ReloadResult{Status: "ok"}, nil
-	}
-	serverOpts.ReloadFunc = reloadFunc
-
 	if callerStore != nil {
-		serverOpts.AdminHandler = admin.NewHandler(callerStore, rt, reloadFunc)
+		serverOpts.AdminHandler = admin.NewHandler(callerStore, rt)
 	}
 
 	srv := server.New(cfg, handler, rt, m, serverOpts)
@@ -342,7 +334,6 @@ func newTestGateway(t *testing.T, opts ...gatewayOpt) *testGateway {
 		Registry:    reg,
 		HealthCheck: healthChecker,
 		AdminKey:    b.adminKey,
-		ReloadFunc:  reloadFunc,
 	}
 }
 

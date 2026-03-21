@@ -728,39 +728,6 @@ roles:
 	}
 }
 
-func TestAdminReload(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "admin-reload.db")
-	adminKey := "test-admin-key-reload"
-
-	mt := newMockTransport([]transport.ToolSchema{
-		{Name: "reloadable", Description: "reloadable tool"},
-	})
-
-	gw := newTestGateway(t,
-		withConfig(fmt.Sprintf(`
-server:
-  address: ":0"
-  db_path: %s
-upstreams:
-  - name: tools
-    transport: streamable-http
-    url: http://placeholder
-roles:
-  admin:
-    allowed_tools: ["*"]
-`, dbPath)),
-		withTransport("tools", mt),
-		withAdminKey(adminKey),
-	)
-
-	rec := gw.rawRequest(t, "POST", "/admin/reload", nil, map[string]string{
-		"Authorization": "Bearer " + adminKey,
-	})
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
 // ============================================================
 // Health Check Tests
 // ============================================================
@@ -1303,7 +1270,7 @@ roles:
 }
 
 // ============================================================
-// Config reload via env var for tests
+// Environment Variable Tests
 // ============================================================
 
 func TestEnvironmentVariableExpansion(t *testing.T) {

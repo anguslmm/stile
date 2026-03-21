@@ -11,19 +11,17 @@ import (
 
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/router"
-	"github.com/anguslmm/stile/internal/server"
 )
 
 // Handler serves admin API endpoints for caller and key management.
 type Handler struct {
-	store      auth.Store
-	router     *router.RouteTable
-	reloadFunc server.ReloadFunc
+	store  auth.Store
+	router *router.RouteTable
 }
 
 // NewHandler creates an admin handler.
-func NewHandler(store auth.Store, rt *router.RouteTable, reload server.ReloadFunc) *Handler {
-	return &Handler{store: store, router: rt, reloadFunc: reload}
+func NewHandler(store auth.Store, rt *router.RouteTable) *Handler {
+	return &Handler{store: store, router: rt}
 }
 
 // Register registers all admin routes on the given mux.
@@ -40,9 +38,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/callers/{name}/roles", h.listRoles)
 	mux.HandleFunc("DELETE /admin/callers/{name}/roles/{role}", h.deleteRole)
 	mux.HandleFunc("POST /admin/refresh", h.refresh)
-	if h.reloadFunc != nil {
-		mux.HandleFunc("POST /admin/reload", h.reload)
-	}
 }
 
 func (h *Handler) createCaller(w http.ResponseWriter, r *http.Request) {
@@ -304,18 +299,6 @@ func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	result := h.router.Refresh(r.Context())
-	writeJSON(w, http.StatusOK, result)
-}
-
-func (h *Handler) reload(w http.ResponseWriter, r *http.Request) {
-	result, err := h.reloadFunc(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"status": "error",
-			"error":  err.Error(),
-		})
-		return
-	}
 	writeJSON(w, http.StatusOK, result)
 }
 

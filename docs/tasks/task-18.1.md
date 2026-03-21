@@ -1,6 +1,6 @@
 # Task 19.1: Remove Config Hot-Reload Mechanism
 
-**Status:** todo
+**Status:** done
 **Depends on:** 18
 
 ---

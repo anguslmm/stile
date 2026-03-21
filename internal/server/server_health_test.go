@@ -1,11 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -144,118 +141,6 @@ func TestReadyzEndpointNotReady(t *testing.T) {
 	}
 }
 
-func TestAdminReloadEndpoint(t *testing.T) {
-	reloadCalled := false
-	reloadFunc := func(ctx context.Context) (*ReloadResult, error) {
-		reloadCalled = true
-		return &ReloadResult{
-			Status:           "ok",
-			UpstreamsAdded:   []string{"new-server"},
-			UpstreamsRemoved: []string{},
-		}, nil
-	}
-
-	mock := &mockTransport{tools: []transport.ToolSchema{{Name: "test-tool"}}}
-	ts := newTestServerWithOpts(t, mock, &Options{ReloadFunc: reloadFunc})
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/admin/reload", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	if !reloadCalled {
-		t.Fatal("reload function was not called")
-	}
-
-	var result ReloadResult
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Status != "ok" {
-		t.Errorf("expected status=ok, got %q", result.Status)
-	}
-	if len(result.UpstreamsAdded) != 1 || result.UpstreamsAdded[0] != "new-server" {
-		t.Errorf("unexpected upstreams_added: %v", result.UpstreamsAdded)
-	}
-}
-
-func TestAdminReloadEndpointError(t *testing.T) {
-	reloadFunc := func(ctx context.Context) (*ReloadResult, error) {
-		return nil, fmt.Errorf("invalid config: missing upstream")
-	}
-
-	mock := &mockTransport{tools: []transport.ToolSchema{{Name: "test-tool"}}}
-	ts := newTestServerWithOpts(t, mock, &Options{ReloadFunc: reloadFunc})
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/admin/reload", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]string
-	json.Unmarshal(body, &result)
-	if result["status"] != "error" {
-		t.Errorf("expected status=error, got %q", result["status"])
-	}
-}
-
-func TestAdminReloadWithAdminAuth(t *testing.T) {
-	reloadFunc := func(ctx context.Context) (*ReloadResult, error) {
-		return &ReloadResult{Status: "ok"}, nil
-	}
-
-	adminAuth := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "Bearer admin-key" {
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"error":"forbidden"}`))
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mock := &mockTransport{tools: []transport.ToolSchema{{Name: "test-tool"}}}
-	ts := newTestServerWithOpts(t, mock, &Options{
-		ReloadFunc: reloadFunc,
-		AdminAuth:  adminAuth,
-	})
-	defer ts.Close()
-
-	// Without admin key → 403.
-	resp, err := http.Post(ts.URL+"/admin/reload", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 without key, got %d", resp.StatusCode)
-	}
-
-	// With admin key → 200.
-	req, _ := http.NewRequest("POST", ts.URL+"/admin/reload", nil)
-	req.Header.Set("Authorization", "Bearer admin-key")
-	resp2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with key, got %d", resp2.StatusCode)
-	}
-}
-
 // healthMockTransport for health checker integration.
 type healthMockTransport struct {
 	healthy bool
@@ -267,6 +152,3 @@ func (m *healthMockTransport) RoundTrip(_ context.Context, req *jsonrpc.Request)
 }
 func (m *healthMockTransport) Close() error  { return nil }
 func (m *healthMockTransport) Healthy() bool { return m.healthy }
-
-// Suppress unused import warning.
-var _ = bytes.NewReader

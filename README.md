@@ -184,7 +184,6 @@ export ADMIN_API_KEY="my-admin-secret"
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/admin/refresh` | Refresh tool cache from all upstreams |
-| POST | `/admin/reload` | Reload entire config file |
 
 ### Caller Management
 
@@ -290,7 +289,7 @@ readinessProbe:
 
 ### Graceful Shutdown
 
-Stile handles `SIGINT`/`SIGTERM` by draining in-flight requests before exiting. `SIGHUP` triggers a config reload without restart.
+Stile handles `SIGINT`/`SIGTERM` by draining in-flight requests before exiting.
 
 ## Running Tests
 
