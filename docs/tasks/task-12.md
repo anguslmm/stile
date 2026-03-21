@@ -1,6 +1,6 @@
 # Task 12: Critical Security Fixes
 
-**Status:** todo
+**Status:** done
 **Depends on:** 11
 **Needed by:** 13, 14, 15
 

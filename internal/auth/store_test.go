@@ -2,6 +2,8 @@ package auth
 
 import (
 	"crypto/sha256"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -295,5 +297,35 @@ func TestDeleteKeyNotFound(t *testing.T) {
 	err := store.DeleteKey("alice", 9999)
 	if err == nil {
 		t.Fatal("expected error for nonexistent key ID")
+	}
+}
+
+func TestGenerateAPIKeyPropagatesError(t *testing.T) {
+	orig := cryptoRandRead
+	t.Cleanup(func() { cryptoRandRead = orig })
+
+	cryptoRandRead = func(b []byte) error {
+		return fmt.Errorf("entropy source unavailable")
+	}
+
+	_, err := GenerateAPIKey()
+	if err == nil {
+		t.Fatal("expected error when rand.Read fails")
+	}
+	if !strings.Contains(err.Error(), "entropy source unavailable") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestGenerateAPIKeySuccess(t *testing.T) {
+	key, err := GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(key, "sk-") {
+		t.Errorf("expected sk- prefix, got %q", key)
+	}
+	if len(key) != 3+32 { // "sk-" + 16 bytes hex-encoded
+		t.Errorf("expected length 35, got %d", len(key))
 	}
 }

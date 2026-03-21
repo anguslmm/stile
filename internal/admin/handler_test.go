@@ -82,7 +82,7 @@ func newTestServerWithAuth(t *testing.T, store *auth.SQLiteStore, rt *router.Rou
 	mux := http.NewServeMux()
 	h.Register(mux)
 	adminHash := sha256.Sum256([]byte(adminKey))
-	adminAuth := auth.AdminAuthMiddleware(adminHash, store)
+	adminAuth := auth.AdminAuthMiddleware(adminHash, store, false)
 	return httptest.NewServer(adminAuth(mux))
 }
 

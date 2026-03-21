@@ -52,6 +52,7 @@ func main() {
 	}
 
 	configPath := flag.String("config", "configs/stile.yaml", "path to config file")
+	devMode := flag.Bool("dev", false, "enable dev mode (open admin API without ADMIN_API_KEY)")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -85,7 +86,7 @@ func main() {
 		rt.StartBackgroundRefresh(ttl)
 	}
 
-	opts, callerStore := buildAuthOpts(cfg)
+	opts, callerStore := buildAuthOpts(cfg, *devMode)
 
 	var auditStore audit.Store
 	if cfg.Audit().Enabled() {
@@ -343,7 +344,7 @@ func setupLogger(cfg *config.Config) {
 	slog.SetDefault(slog.New(handler))
 }
 
-func buildAuthOpts(cfg *config.Config) (*server.Options, *auth.SQLiteStore) {
+func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, *auth.SQLiteStore) {
 	dbPath := cfg.Server().DBPath()
 	if dbPath == "" {
 		return nil, nil
@@ -365,10 +366,15 @@ func buildAuthOpts(cfg *config.Config) (*server.Options, *auth.SQLiteStore) {
 	adminKey := os.Getenv("ADMIN_API_KEY")
 	if adminKey != "" {
 		adminHash := sha256.Sum256([]byte(adminKey))
-		opts.AdminAuth = auth.AdminAuthMiddleware(adminHash, store)
+		opts.AdminAuth = auth.AdminAuthMiddleware(adminHash, store, devMode)
 	} else {
+		if !devMode {
+			fmt.Fprintf(os.Stderr, "error: ADMIN_API_KEY not set and --dev not specified; refusing to start with open admin endpoints\n")
+			os.Exit(1)
+		}
+		slog.Warn("running in dev mode — admin endpoints are open without authentication")
 		var zeroHash [32]byte
-		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, store)
+		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, store, devMode)
 	}
 
 	return opts, store

@@ -294,10 +294,10 @@ func newTestGateway(t *testing.T, opts ...gatewayOpt) *testGateway {
 
 		if b.adminKey != "" {
 			adminHash := sha256.Sum256([]byte(b.adminKey))
-			serverOpts.AdminAuth = auth.AdminAuthMiddleware(adminHash, callerStore)
+			serverOpts.AdminAuth = auth.AdminAuthMiddleware(adminHash, callerStore, false)
 		} else {
 			var zeroHash [32]byte
-			serverOpts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, callerStore)
+			serverOpts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, callerStore, true)
 		}
 	}
 
@@ -362,7 +362,10 @@ func (gw *testGateway) addCaller(t *testing.T, name string, roles ...string) str
 		}
 	}
 
-	rawKey := auth.GenerateAPIKey()
+	rawKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("generate key for %q: %v", name, err)
+	}
 	hash := sha256.Sum256([]byte(rawKey))
 	if err := gw.Store.AddKey(name, hash, "test-key"); err != nil {
 		t.Fatalf("add key for %q: %v", name, err)

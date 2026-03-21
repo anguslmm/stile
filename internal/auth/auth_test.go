@@ -932,7 +932,7 @@ func TestAdminValidKeyAccepted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := AdminAuthMiddleware(adminHash, store)(inner)
+	handler := AdminAuthMiddleware(adminHash, store, false)(inner)
 
 	req := httptest.NewRequest("POST", "/admin/refresh", nil)
 	req.Header.Set("Authorization", "Bearer "+adminKey)
@@ -953,7 +953,7 @@ func TestAdminInvalidKeyRejected(t *testing.T) {
 		t.Error("inner should not be called")
 	})
 
-	handler := AdminAuthMiddleware(adminHash, store)(inner)
+	handler := AdminAuthMiddleware(adminHash, store, false)(inner)
 
 	req := httptest.NewRequest("POST", "/admin/refresh", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
@@ -974,7 +974,7 @@ func TestAdminDevModeNoKeyNoCallers(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := AdminAuthMiddleware(zeroHash, store)(inner)
+	handler := AdminAuthMiddleware(zeroHash, store, true)(inner)
 
 	req := httptest.NewRequest("POST", "/admin/refresh", nil)
 	w := httptest.NewRecorder()
@@ -997,7 +997,9 @@ func TestAdminNoKeyButCallersExist(t *testing.T) {
 		t.Error("inner should not be called")
 	})
 
-	handler := AdminAuthMiddleware(zeroHash, store)(inner)
+	// Even with devMode=true, no admin key → open access (dev mode ignores callers check).
+	// But without devMode, no admin key → 403.
+	handler := AdminAuthMiddleware(zeroHash, store, false)(inner)
 
 	req := httptest.NewRequest("POST", "/admin/refresh", nil)
 	w := httptest.NewRecorder()
@@ -1015,6 +1017,49 @@ func TestCallerFromContextNil(t *testing.T) {
 	ctx := context.Background()
 	if c := CallerFromContext(ctx); c != nil {
 		t.Error("expected nil from empty context")
+	}
+}
+
+func TestAdminNoKeyNoDevModeRejects(t *testing.T) {
+	var zeroHash [32]byte
+	store := newTestStore(t)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner should not be called")
+	})
+
+	handler := AdminAuthMiddleware(zeroHash, store, false)(inner)
+
+	req := httptest.NewRequest("POST", "/admin/refresh", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 when no admin key and devMode=false, got %d", w.Code)
+	}
+}
+
+func TestAdminDevModeAllowsEvenWithCallers(t *testing.T) {
+	var zeroHash [32]byte
+	store := newTestStore(t)
+	if err := store.AddCaller("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AdminAuthMiddleware(zeroHash, store, true)(inner)
+
+	req := httptest.NewRequest("POST", "/admin/refresh", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 in dev mode even with callers, got %d", w.Code)
 	}
 }
 

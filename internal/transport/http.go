@@ -86,9 +86,13 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 
 	// Default: treat as JSON response.
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	const maxResponseBody = 10 << 20 // 10 MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
 		return nil, fmt.Errorf("transport/http: read response body: %w", err)
+	}
+	if len(data) > maxResponseBody {
+		return nil, fmt.Errorf("transport/http: response body too large")
 	}
 
 	var rpcResp jsonrpc.Response

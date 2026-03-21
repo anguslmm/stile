@@ -77,7 +77,11 @@ func runAddKey(args []string) {
 	}
 	defer store.Close()
 
-	rawKey := generateAPIKey()
+	rawKey, err := generateAPIKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 	hash := sha256.Sum256([]byte(rawKey))
 	if err := store.AddKey(*caller, hash, *label); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -279,6 +283,6 @@ func runRevokeKey(args []string) {
 	fmt.Printf("Key %q revoked for caller %q.\n", *label, *caller)
 }
 
-func generateAPIKey() string {
+func generateAPIKey() (string, error) {
 	return auth.GenerateAPIKey()
 }

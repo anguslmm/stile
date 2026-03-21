@@ -22,7 +22,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 10 | Admin API for caller management | [task-10.md](tasks/task-10.md) | done |
 | 10.1 | Admin API — role management endpoints | [task-10.1.md](tasks/task-10.1.md) | done |
 | 11 | Integration tests + release packaging | [task-11.md](tasks/task-11.md) | done |
-| 12 | Critical security fixes (timing attack, rand error, body/batch limits) | [task-12.md](tasks/task-12.md) | todo |
+| 12 | Critical security fixes (timing attack, rand error, body/batch limits) | [task-12.md](tasks/task-12.md) | done |
 | 13 | HTTP transport hardening (timeout, SSE buffer, health tracking) | [task-13.md](tasks/task-13.md) | todo |
 | 14 | SQLite + rate limiter hardening (busy timeout, pool, map cap) | [task-14.md](tasks/task-14.md) | todo |
 | 15 | Code health + minor fixes (typed errors, dead fields, defensive checks) | [task-15.md](tasks/task-15.md) | todo |

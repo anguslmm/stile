@@ -159,10 +159,17 @@ func (s *Server) Handler() http.Handler {
 	return s.httpServer.Handler
 }
 
+const maxRequestBody = 10 << 20 // 10 MB
+const maxBatchSize = 100
+
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	if err != nil {
 		writeError(w, nil, jsonrpc.CodeParseError, "failed to read request body")
+		return
+	}
+	if len(body) > maxRequestBody {
+		writeError(w, nil, jsonrpc.CodeInvalidRequest, "request body too large")
 		return
 	}
 
@@ -170,6 +177,11 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("mcp parse error", "error", err, "body_prefix", truncate(string(body), 200))
 		writeError(w, nil, jsonrpc.CodeParseError, err.Error())
+		return
+	}
+
+	if len(requests) > maxBatchSize {
+		writeError(w, nil, jsonrpc.CodeInvalidRequest, "batch too large")
 		return
 	}
 

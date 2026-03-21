@@ -427,5 +427,61 @@ func TestAdminRefresh(t *testing.T) {
 	}
 }
 
+func TestOversizedRequestBody(t *testing.T) {
+	mock := &mockTransport{tools: []transport.ToolSchema{{Name: "test-tool"}}}
+	ts := newTestServer(t, mock)
+	defer ts.Close()
+
+	// Create a body larger than 10 MB.
+	bigBody := make([]byte, 11<<20)
+	for i := range bigBody {
+		bigBody[i] = 'x'
+	}
+	resp, err := http.Post(ts.URL+"/mcp", "application/json", bytes.NewReader(bigBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	r := readResponse(t, resp)
+	if r.Error == nil {
+		t.Fatal("expected error for oversized body")
+	}
+	if !strings.Contains(r.Error.Message, "too large") {
+		t.Errorf("expected 'too large' in error, got %q", r.Error.Message)
+	}
+}
+
+func TestOversizedBatch(t *testing.T) {
+	mock := &mockTransport{tools: []transport.ToolSchema{{Name: "test-tool"}}}
+	ts := newTestServer(t, mock)
+	defer ts.Close()
+
+	// Build a batch with 101 requests (over the limit of 100).
+	batch := make([]map[string]any, 101)
+	for i := range batch {
+		batch[i] = map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "ping",
+			"id":      i + 1,
+		}
+	}
+
+	data, _ := json.Marshal(batch)
+	resp, err := http.Post(ts.URL+"/mcp", "application/json", bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	r := readResponse(t, resp)
+	if r.Error == nil {
+		t.Fatal("expected error for oversized batch")
+	}
+	if !strings.Contains(r.Error.Message, "batch too large") {
+		t.Errorf("expected 'batch too large' in error, got %q", r.Error.Message)
+	}
+}
+
 // Verify unused import is used.
 var _ = fmt.Sprintf

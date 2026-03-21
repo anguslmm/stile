@@ -5,6 +5,7 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -196,21 +197,20 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 }
 
 // AdminAuthMiddleware returns middleware that protects admin endpoints.
-// If adminKeyHash is zero (ADMIN_API_KEY not set) and no callers exist, admin
-// is open (dev mode). If adminKeyHash is zero but callers exist, admin returns 403.
-func AdminAuthMiddleware(adminKeyHash [32]byte, store CallerStore) func(http.Handler) http.Handler {
+// When devMode is true and no admin key is configured, admin endpoints are open.
+// When devMode is false and no admin key is configured, admin endpoints always return 403.
+func AdminAuthMiddleware(adminKeyHash [32]byte, store CallerStore, devMode bool) func(http.Handler) http.Handler {
 	zeroHash := [32]byte{}
-	hasAdminKey := adminKeyHash != zeroHash
+	hasAdminKey := subtle.ConstantTimeCompare(adminKeyHash[:], zeroHash[:]) != 1
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !hasAdminKey {
-				hasCallers, err := store.HasCallers()
-				if err != nil || hasCallers {
+				if !devMode {
 					writeForbidden(w)
 					return
 				}
-				// Dev mode: no admin key and no callers — allow through.
+				// Dev mode: allow through without auth.
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -222,7 +222,7 @@ func AdminAuthMiddleware(adminKeyHash [32]byte, store CallerStore) func(http.Han
 			}
 			token := strings.TrimPrefix(header, "Bearer ")
 			hash := sha256.Sum256([]byte(token))
-			if hash != adminKeyHash {
+			if subtle.ConstantTimeCompare(hash[:], adminKeyHash[:]) != 1 {
 				writeForbidden(w)
 				return
 			}

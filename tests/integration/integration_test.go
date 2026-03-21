@@ -1284,20 +1284,21 @@ roles:
     allowed_tools: ["*"]
 `, dbPath)),
 		withTransport("tools", mt),
-		// No admin key — dev mode
+		// No admin key — dev mode (devMode=true in helpers)
 	)
 
-	// With no callers and no admin key, admin should be open
+	// With no callers and no admin key, admin should be open (dev mode)
 	rec := gw.rawRequest(t, "POST", "/admin/refresh", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Errorf("dev mode: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// After adding a caller, admin should be locked
+	// After adding a caller, admin should still be open in dev mode
+	// (the --dev flag keeps admin open regardless of callers)
 	gw.addCaller(t, "someone", "user")
 	rec = gw.rawRequest(t, "POST", "/admin/refresh", nil, nil)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("expected 403 after callers exist, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("dev mode: expected 200 even after callers exist, got %d", rec.Code)
 	}
 }
 

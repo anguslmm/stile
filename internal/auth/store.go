@@ -11,8 +11,11 @@ import (
 )
 
 var (
-	cryptoRandRead     = func(b []byte) { rand.Read(b) }
-	hexEncodeToString  = hex.EncodeToString
+	cryptoRandRead = func(b []byte) error {
+		_, err := rand.Read(b)
+		return err
+	}
+	hexEncodeToString = hex.EncodeToString
 )
 
 const schema = `
@@ -369,10 +372,12 @@ func (s *SQLiteStore) Close() error {
 }
 
 // GenerateAPIKey creates a cryptographically random API key.
-func GenerateAPIKey() string {
+func GenerateAPIKey() (string, error) {
 	b := make([]byte, 16)
-	cryptoRandRead(b)
-	return "sk-" + hexEncodeToString(b)
+	if err := cryptoRandRead(b); err != nil {
+		return "", fmt.Errorf("auth: generate key: %w", err)
+	}
+	return "sk-" + hexEncodeToString(b), nil
 }
 
 // needsFullMigration checks if the database has the pre-6.2 schema

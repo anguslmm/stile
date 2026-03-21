@@ -167,7 +167,11 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rawKey := auth.GenerateAPIKey()
+	rawKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
 	hash := sha256.Sum256([]byte(rawKey))
 
 	if err := h.store.AddKey(callerName, hash, req.Label); err != nil {
