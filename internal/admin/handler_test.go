@@ -62,7 +62,8 @@ func (m *mockTransport) RoundTrip(_ context.Context, req *jsonrpc.Request) (tran
 		resp, _ := jsonrpc.NewResponse(req.ID, result)
 		return transport.NewJSONResult(resp), nil
 	}
-	return nil, nil
+	resp, _ := jsonrpc.NewResponse(req.ID, json.RawMessage(`{}`))
+	return transport.NewJSONResult(resp), nil
 }
 func (m *mockTransport) Close() error  { return nil }
 func (m *mockTransport) Healthy() bool { return true }
