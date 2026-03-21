@@ -23,10 +23,16 @@ import (
 	"github.com/anguslmm/stile/internal/transport"
 )
 
+// rateLimiterBox wraps the RateLimiter interface so it can be stored in
+// an atomic.Pointer (which requires a concrete type).
+type rateLimiterBox struct {
+	rl policy.RateLimiter
+}
+
 // Handler dispatches MCP tool calls to the correct upstream via the router.
 type Handler struct {
 	router      *router.RouteTable
-	rateLimiter atomic.Pointer[policy.RateLimiter]
+	rateLimiter atomic.Pointer[rateLimiterBox]
 	metrics     *metrics.Metrics
 	auditStore  audit.Store
 	tracer      trace.Tracer
@@ -34,10 +40,10 @@ type Handler struct {
 
 // NewHandler creates a Handler backed by the given RouteTable.
 // rateLimiter, m, auditStore, and tracer may be nil to disable their features.
-func NewHandler(rt *router.RouteTable, rateLimiter *policy.RateLimiter, m *metrics.Metrics, auditStore audit.Store, opts ...HandlerOption) *Handler {
+func NewHandler(rt *router.RouteTable, rateLimiter policy.RateLimiter, m *metrics.Metrics, auditStore audit.Store, opts ...HandlerOption) *Handler {
 	h := &Handler{router: rt, metrics: m, auditStore: auditStore}
 	if rateLimiter != nil {
-		h.rateLimiter.Store(rateLimiter)
+		h.rateLimiter.Store(&rateLimiterBox{rl: rateLimiter})
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -54,8 +60,8 @@ func WithTracer(t trace.Tracer) HandlerOption {
 }
 
 // SetRateLimiter atomically swaps the rate limiter.
-func (h *Handler) SetRateLimiter(rl *policy.RateLimiter) {
-	h.rateLimiter.Store(rl)
+func (h *Handler) SetRateLimiter(rl policy.RateLimiter) {
+	h.rateLimiter.Store(&rateLimiterBox{rl: rl})
 }
 
 // HandleToolsList returns the merged tool list from all upstreams,
@@ -158,12 +164,13 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	// Rate limit check.
-	rl := h.rateLimiter.Load()
-	if rl != nil {
+	box := h.rateLimiter.Load()
+	if box != nil {
+		var roles []string
 		if caller != nil {
-			rl.RegisterCaller(caller.Name, caller.Roles)
+			roles = caller.Roles
 		}
-		if ok, denial := rl.Allow(callerName, params.Name, upstreamName); !ok {
+		if denial := box.rl.Allow(callerName, params.Name, upstreamName, roles); denial != nil {
 			slog.DebugContext(ctx, "rate limit rejected",
 				"caller", callerName,
 				"tool", params.Name,

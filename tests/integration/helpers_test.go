@@ -275,7 +275,7 @@ func newTestGateway(t *testing.T, opts ...gatewayOpt) *testGateway {
 		t.Cleanup(func() { auditStore.Close() })
 	}
 
-	rateLimiter := policy.NewRateLimiter(cfg)
+	rateLimiter := policy.NewLocalRateLimiter(cfg)
 	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore)
 
 	serverOpts := &server.Options{}

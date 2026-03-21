@@ -1,83 +1,77 @@
-# Task 20: Horizontal Scaling Documentation and Stdio Guidance
+# Task 20: TLS and mTLS Support
 
 **Status:** todo
-**Depends on:** 17, 18, 19
+**Depends on:** 15
 
 ---
 
 ## Goal
 
-Document how to deploy Stile in a multi-instance configuration, including the architectural constraints around stdio transports, and provide guidance for operators scaling beyond a single node.
+Add TLS termination for inbound connections and TLS/mTLS for outbound connections to upstream MCP servers. Without this, API keys and auth tokens travel in plaintext, which is a non-starter for production deployments.
 
 ---
 
-## 1. Create `docs/horizontal-scaling.md`
+## 1. Inbound TLS termination
 
-Write an operations guide covering:
+Add TLS config to the server section:
 
-### Architecture overview
-
-- Stile is designed to run as multiple stateless instances behind a load balancer
-- Shared state (auth, audit) lives in Postgres
-- Shared rate limiting uses Redis
-- Config reload broadcast keeps instances in sync
-- Each instance independently health-checks its upstreams
-
-### Prerequisites
-
-- Postgres database (task 17) — required for shared auth/audit
-- Redis instance (task 18) — required for global rate limiting
-- Load balancer (any — nginx, HAProxy, ALB, etc.)
-
-### Config example
-
-Full multi-instance config example with Postgres, Redis, and broadcast enabled.
-
-### Stdio transport considerations
-
-**This is the key guidance to document clearly:**
-
-- HTTP/Streamable-HTTP upstreams work seamlessly — all instances connect to the same remote MCP servers
-- Stdio upstreams spawn a **local child process per instance**. This means:
-  - N instances = N copies of each stdio MCP server running
-  - Each copy maintains independent state (if the tool server is stateful)
-  - This is fine for stateless/lightweight tools (file readers, calculators, etc.)
-  - For expensive or stateful tools, **wrap the stdio server in an HTTP adapter** and point Stile at it as an HTTP upstream instead
-- Recommend: for production multi-instance deployments, prefer HTTP upstreams exclusively
-
-### Recommended stdio-to-HTTP wrapper pattern
-
-Document or link to a simple wrapper pattern:
-```
-stdio MCP server → thin HTTP wrapper (runs as a sidecar or service) → Stile connects via HTTP
+```yaml
+server:
+  address: ":8443"
+  tls:
+    cert_file: /path/to/cert.pem
+    key_file: /path/to/key.pem
+    min_version: "1.2"           # optional, default TLS 1.2
+    client_ca_file: /path/to/ca.pem  # optional, enables mTLS for inbound
 ```
 
-Mention existing community tools like `mcp-proxy` or `supergateway` if applicable, or provide a minimal example.
+**Implementation:**
 
-### Load balancer configuration
-
-- No sticky sessions required (all state is in Postgres/Redis)
-- Health check endpoint: `GET /healthz` (returns 200 when process is alive)
-- Readiness endpoint: `GET /readyz` (returns 200 when at least one upstream is healthy)
-- Recommended: route health checks to `/healthz`, readiness to `/readyz`
-
-### Scaling guidelines
-
-- **CPU-bound**: each instance handles proxying independently; scale horizontally as needed
-- **Memory**: primary memory consumers are the tool cache (small) and in-flight request bodies. Set body size limits (task 12) to cap per-request memory
-- **Redis**: rate limiter adds ~3 Redis round-trips per request (caller, tool, upstream checks). Use Redis pipelining or a Lua script to reduce to 1 round-trip
-- **Postgres**: auth lookups are per-request but cached by the caller's API key hash. Connection pooling (task 14) keeps this efficient
+- Add `TLSConfig` type to `internal/config/` with getters for each field
+- In `main.go`, if TLS is configured, use `httpServer.ListenAndServeTLS()` instead of `ListenAndServe()`
+- Build a `tls.Config` with `MinVersion`, and optionally `ClientCAs` + `ClientAuth: tls.RequireAndVerifyClientCert` when `client_ca_file` is set
+- If TLS is not configured, continue to serve plaintext (for development and for deployments where TLS is terminated at the load balancer)
 
 ---
 
-## 2. Update README
+## 2. Outbound TLS for HTTP upstreams
 
-Add a "Scaling" section to the main README linking to the horizontal scaling doc, with a one-line summary: "Stile supports multi-instance deployment with Postgres and Redis — see docs/horizontal-scaling.md."
+Upstream URLs already support `https://`, but there's no way to configure custom CA certificates or client certificates (mTLS) for upstream connections.
+
+Add per-upstream TLS config:
+
+```yaml
+upstreams:
+  - name: secure-tools
+    transport: streamable-http
+    url: https://tools.internal:8443/mcp
+    tls:
+      ca_file: /path/to/internal-ca.pem      # custom CA for upstream
+      cert_file: /path/to/client-cert.pem     # client cert for mTLS
+      key_file: /path/to/client-key.pem       # client key for mTLS
+      insecure_skip_verify: false             # never true in prod, useful for dev
+```
+
+**Implementation:**
+
+- Add `TLSConfig` to `UpstreamConfig`
+- In `NewHTTPTransport`, build a custom `tls.Config` and set it on the `http.Transport`
+- If no TLS config is provided, use the default system CA pool (current behavior)
+
+---
+
+## 3. TLS reload on SIGHUP
+
+When config is reloaded, update TLS certificates without restarting. Use `tls.Config.GetCertificate` with a callback that reads the current cert from a reloadable field, rather than loading the cert once at startup.
 
 ---
 
 ## Verification
 
-- Doc review: have someone unfamiliar with the codebase follow the guide
-- Verify all referenced config fields and endpoints exist
-- Verify example config is valid YAML that passes config loading
+- Existing tests pass (no TLS configured = plaintext, unchanged behavior)
+- Add test: server accepts HTTPS connections with valid cert
+- Add test: server rejects connections when client cert is required but not provided
+- Add test: HTTP transport connects to upstream with custom CA
+- Add test: HTTP transport sends client cert for mTLS upstream
+- Add test: invalid TLS config (missing key file, etc.) fails at startup with clear error
+- Test: `insecure_skip_verify: true` works for dev scenarios

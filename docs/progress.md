@@ -28,15 +28,15 @@ This document tracks the status of each implementation task. Agents should read 
 | 15 | Code health + minor fixes (typed errors, dead fields, defensive checks) | [task-15.md](tasks/task-15.md) | done |
 | 16 | OpenTelemetry observability (traces, metrics migration, log correlation) | [task-16.md](tasks/task-16.md) | done |
 | 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | done |
-| 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | todo |
-| 19 | Config reload broadcast (Postgres NOTIFY / Redis pub/sub) | [task-19.md](tasks/task-19.md) | todo |
-| 20 | Horizontal scaling documentation and stdio guidance | [task-20.md](tasks/task-20.md) | todo |
-| 21 | TLS and mTLS support | [task-21.md](tasks/task-21.md) | todo |
-| 22 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-22.md](tasks/task-22.md) | todo |
-| 23 | Trace context propagation | [task-23.md](tasks/task-23.md) | todo |
-| 24 | Rate limit response headers | [task-24.md](tasks/task-24.md) | todo |
-| 25 | Load testing and performance benchmarks | [task-25.md](tasks/task-25.md) | todo |
-| 26 | Operational runbooks | [task-26.md](tasks/task-26.md) | todo |
+| 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | done |
+| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | todo |
+| 19.1 | Remove config hot-reload mechanism | [task-19.1.md](tasks/task-19.1.md) | todo |
+| 20 | TLS and mTLS support | [task-20.md](tasks/task-20.md) | todo |
+| 21 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-21.md](tasks/task-21.md) | todo |
+| 22 | Trace context propagation | [task-22.md](tasks/task-22.md) | todo |
+| 23 | Rate limit response headers | [task-23.md](tasks/task-23.md) | todo |
+| 24 | Load testing and performance benchmarks | [task-24.md](tasks/task-24.md) | todo |
+| 25 | Operational runbooks | [task-25.md](tasks/task-25.md) | todo |
 
 ## Notes
 

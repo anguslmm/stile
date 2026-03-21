@@ -1,79 +1,112 @@
-# Task 25: Load Testing and Performance Benchmarks
+# Task 25: Operational Runbooks
 
 **Status:** todo
-**Depends on:** 22
+**Depends on:** 16, 19, 20, 21
 
 ---
 
 ## Goal
 
-Establish baseline performance characteristics for Stile so that operators can capacity-plan and engineers can detect regressions. No production readiness review will pass without knowing the proxy's overhead, throughput limits, and resource consumption under load.
+Write runbooks for common production failure scenarios so that an oncall engineer who has never worked on Stile can diagnose and resolve issues without escalating. This is a documentation task, not a code task.
 
 ---
 
-## 1. Create a benchmark suite
+## 1. Create `docs/runbooks/` directory
 
-Add `benchmarks/` at the project root with a load testing harness. Use Go's `testing.B` benchmarks for microbenchmarks and a load generator (e.g. `vegeta`, `hey`, or a custom Go harness) for system-level tests.
+Each runbook follows a consistent structure:
 
-### Microbenchmarks (Go `testing.B`)
+```markdown
+# <Alert / Symptom>
 
-Add to the relevant `_test.go` files:
+## Severity
+P1 / P2 / P3
 
-- **JSON-RPC codec:** parse, marshal, batch parse — measures serialization overhead
-- **Auth lookup:** `Authenticate()` with N callers in the store — measures per-request auth cost
-- **Route resolution:** `Resolve()` with N tools across M upstreams
-- **Rate limiter:** `Allow()` with various bucket states — measures per-request policy overhead
-- **Full proxy round-trip:** end-to-end through the handler with a mock upstream (httptest server returning a canned response) — measures total proxy overhead excluding network
+## Symptoms
+What the oncall engineer observes (alert text, dashboard signals, user reports).
 
-### System-level load tests
+## Likely Causes
+Ordered by probability.
 
-Create `benchmarks/loadtest.go` (or use an external tool) that:
+## Diagnosis Steps
+Specific commands and queries to narrow down the cause.
 
-1. Starts a Stile instance with a realistic config (auth enabled, rate limits, multiple upstreams)
-2. Starts mock upstream servers that respond with configurable latency
-3. Sends sustained load at increasing RPS
-4. Measures and reports:
-   - **Throughput:** max RPS at target latency (p99 < 50ms proxy overhead)
-   - **Latency distribution:** p50, p90, p95, p99 at various RPS levels
-   - **Resource consumption:** peak RSS, goroutine count, open file descriptors
-   - **Saturation point:** RPS at which latency degrades or errors appear
+## Remediation
+Step-by-step fix for each cause.
 
-### Scenarios to benchmark
-
-| Scenario | Description |
-|---|---|
-| JSON passthrough | Simple tool call, upstream returns JSON |
-| SSE passthrough | Tool call, upstream returns SSE stream (N events) |
-| High concurrency | 1000 concurrent callers, single upstream |
-| Many upstreams | 50 upstreams, requests distributed across them |
-| Rate limit heavy | Every request hits the rate limiter near its limit |
-| Auth heavy | 1000 distinct callers in the auth store |
+## Escalation
+When and who to escalate to if remediation doesn't resolve.
+```
 
 ---
 
-## 2. Publish baseline numbers
+## 2. Runbooks to write
 
-Run the benchmarks on a reference machine (document the specs) and record results in `docs/performance.md`:
+### Upstream failures
 
-- Proxy overhead per request (time added beyond upstream latency)
-- Max throughput (RPS) for JSON and SSE responses
-- Memory consumption per concurrent connection
-- Goroutine count under load
+**`upstream-unhealthy.md`** — One or more upstreams marked unhealthy.
+- Check `/readyz`, upstream health dashboard
+- Verify upstream is reachable from the Stile host
+- Check circuit breaker state (task 21 metrics)
+- Remediation: fix upstream, or remove from config and rolling restart if permanently gone
 
-These numbers serve as a baseline for regression detection and as guidance for operators doing capacity planning.
+**`upstream-high-latency.md`** — Upstream responding slowly, causing timeouts.
+- Check per-upstream latency metrics and traces
+- Look for upstream resource exhaustion
+- Remediation: increase per-upstream timeout (short-term), fix upstream (long-term)
+
+### Rate limiting
+
+**`rate-limit-exhaustion.md`** — Callers hitting rate limits unexpectedly.
+- Check `stile_rate_limit_rejections_total` by caller and tool
+- Verify rate limit config is correct
+- Check for runaway agents making excessive calls
+- Remediation: adjust limits, identify and fix misbehaving caller
+
+### Database
+
+**`database-connection-exhausted.md`** — Auth or audit DB connections maxed out.
+- Check connection pool metrics
+- Look for long-running queries or lock contention
+- Remediation: increase pool size, investigate slow queries, restart if deadlocked
+
+### Redis (if using Redis rate limiting)
+
+**`redis-unavailable.md`** — Redis for rate limiting is unreachable.
+- Rate limiter should fail closed (all requests denied)
+- Check Redis connectivity, memory, replication status
+- Remediation: restore Redis, or temporarily switch to local rate limiting with config change and rolling restart if global enforcement can be relaxed
+
+### TLS
+
+**`tls-certificate-expiry.md`** — TLS certificates approaching expiration.
+- Check cert expiry dates
+- Remediation: rotate certs, reload config (SIGHUP) or rolling restart
+
+### Memory / resource
+
+**`high-memory-usage.md`** — Stile instance consuming excessive memory.
+- Check goroutine count (possible leak from unclosed SSE streams)
+- Check request body sizes
+- Check tool cache size
+- Remediation: identify leak source, restart instance (short-term)
+
+### Config
+
+**`config-reload-failure.md`** — Config reload via SIGHUP or admin API failed.
+- Check structured logs for reload error details
+- Common causes: YAML syntax error, invalid upstream URL, missing TLS cert file
+- Remediation: fix config file, retry reload
 
 ---
 
-## 3. CI integration
+## 3. Link from operations docs
 
-Add benchmark runs to CI (not on every PR — too slow). Options:
-- Nightly benchmark job that records results and alerts on regressions (> 10% p99 increase)
-- Or: run Go microbenchmarks on PR with `benchstat` comparison against main branch
+Add a "Troubleshooting" section to `docs/horizontal-scaling.md` (task 19) and the README linking to the runbooks directory.
 
 ---
 
 ## Verification
 
-- All benchmarks run without error
-- `docs/performance.md` exists with baseline numbers and test methodology
-- CI job runs benchmarks (at least nightly) and results are accessible
+- Each runbook references specific metrics, endpoints, or log fields that exist in the codebase
+- Runbooks are reviewed by someone unfamiliar with Stile to verify clarity
+- All referenced config fields and commands are accurate

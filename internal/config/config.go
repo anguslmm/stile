@@ -15,8 +15,10 @@ import (
 
 // RateLimit represents a parsed rate limit specification (e.g. "100/min").
 type RateLimit struct {
-	rate  float64 // requests per second
-	burst int     // burst size
+	rate   float64 // requests per second
+	burst  int     // burst size (for token bucket)
+	count  int     // requests per window (for sliding window)
+	window int     // window in seconds (for sliding window)
 }
 
 // Rate returns the requests-per-second rate.
@@ -24,6 +26,12 @@ func (r RateLimit) Rate() float64 { return r.rate }
 
 // Burst returns the burst size.
 func (r RateLimit) Burst() int { return r.burst }
+
+// Count returns the number of requests allowed per window (for sliding window).
+func (r RateLimit) Count() int { return r.count }
+
+// Window returns the window duration in seconds (for sliding window).
+func (r RateLimit) Window() int { return r.window }
 
 // ParseRateLimit parses a rate limit string like "100/min", "10/sec", "5000/hour".
 // Burst is set to the per-second rate rounded up (at least 1).
@@ -39,13 +47,17 @@ func ParseRateLimit(s string) (RateLimit, error) {
 	}
 
 	var perSecond float64
+	var windowSecs int
 	switch parts[1] {
 	case "sec", "second":
 		perSecond = count
+		windowSecs = 1
 	case "min", "minute":
 		perSecond = count / 60
+		windowSecs = 60
 	case "hour":
 		perSecond = count / 3600
+		windowSecs = 3600
 	default:
 		return RateLimit{}, fmt.Errorf("config: invalid rate limit %q: unit must be sec, min, or hour", s)
 	}
@@ -55,7 +67,9 @@ func ParseRateLimit(s string) (RateLimit, error) {
 		burst = 1
 	}
 
-	return RateLimit{rate: perSecond, burst: burst}, nil
+	windowCount := int(math.Ceil(count))
+
+	return RateLimit{rate: perSecond, burst: burst, count: windowCount, window: windowSecs}, nil
 }
 
 // UpstreamConfig is a sealed interface representing an upstream's configuration.
@@ -178,10 +192,32 @@ type tracesConfig struct {
 }
 
 type rateLimitDefaults struct {
+	backend         string
+	redis           *RedisConfig
 	defaultCaller   *RateLimit
 	defaultTool     *RateLimit
 	defaultUpstream *RateLimit
 }
+
+// RedisConfig provides read-only access to Redis rate limiter settings.
+type RedisConfig struct {
+	address   string
+	password  string
+	db        int
+	keyPrefix string
+}
+
+// Address returns the Redis server address.
+func (r *RedisConfig) Address() string { return r.address }
+
+// Password returns the Redis password.
+func (r *RedisConfig) Password() string { return r.password }
+
+// DB returns the Redis database number.
+func (r *RedisConfig) DB() int { return r.db }
+
+// KeyPrefix returns the key prefix for namespacing.
+func (r *RedisConfig) KeyPrefix() string { return r.keyPrefix }
 
 // RateLimitDefaults provides read-only access to global rate limit defaults.
 type RateLimitDefaults struct {
@@ -252,6 +288,19 @@ func (c *Config) RateLimitDefaults() RateLimitDefaults {
 		defaultTool:     c.rateLimitDefaults.defaultTool,
 		defaultUpstream: c.rateLimitDefaults.defaultUpstream,
 	}
+}
+
+// RateLimitBackend returns the rate limiter backend ("local" or "redis").
+func (c *Config) RateLimitBackend() string {
+	if c.rateLimitDefaults.backend == "" {
+		return "local"
+	}
+	return c.rateLimitDefaults.backend
+}
+
+// RedisConfig returns the Redis rate limiter configuration, or nil if not set.
+func (c *Config) RedisConfig() *RedisConfig {
+	return c.rateLimitDefaults.redis
 }
 
 // ServerConfig provides read-only access to server settings.
@@ -417,9 +466,18 @@ type rawRoleConfig struct {
 }
 
 type rawRateLimitDefaults struct {
-	DefaultCaller   string `yaml:"default_caller"`
-	DefaultTool     string `yaml:"default_tool"`
-	DefaultUpstream string `yaml:"default_upstream"`
+	Backend         string          `yaml:"backend"`
+	Redis           *rawRedisConfig `yaml:"redis"`
+	DefaultCaller   string          `yaml:"default_caller"`
+	DefaultTool     string          `yaml:"default_tool"`
+	DefaultUpstream string          `yaml:"default_upstream"`
+}
+
+type rawRedisConfig struct {
+	Address   string `yaml:"address"`
+	Password  string `yaml:"password"`
+	DB        int    `yaml:"db"`
+	KeyPrefix string `yaml:"key_prefix"`
 }
 
 type rawLoggingConfig struct {
@@ -691,6 +749,23 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.audit.driver = raw.Audit.Driver
 	}
 
+	// Parse rate limit backend and Redis config.
+	if raw.RateLimits != nil {
+		cfg.rateLimitDefaults.backend = raw.RateLimits.Backend
+		if raw.RateLimits.Redis != nil {
+			keyPrefix := raw.RateLimits.Redis.KeyPrefix
+			if keyPrefix == "" {
+				keyPrefix = "stile:"
+			}
+			cfg.rateLimitDefaults.redis = &RedisConfig{
+				address:   raw.RateLimits.Redis.Address,
+				password:  raw.RateLimits.Redis.Password,
+				db:        raw.RateLimits.Redis.DB,
+				keyPrefix: keyPrefix,
+			}
+		}
+	}
+
 	// Parse global rate limit defaults.
 	if raw.RateLimits != nil {
 		if raw.RateLimits.DefaultCaller != "" {
@@ -803,6 +878,19 @@ func validate(raw rawConfig) error {
 		sr := raw.Telemetry.Traces.SampleRate
 		if sr < 0 || sr > 1 {
 			return fmt.Errorf("config: telemetry.traces.sample_rate must be between 0.0 and 1.0, got %f", sr)
+		}
+	}
+
+	if raw.RateLimits != nil {
+		switch raw.RateLimits.Backend {
+		case "", "local", "redis":
+		default:
+			return fmt.Errorf("config: rate_limits.backend must be \"local\" or \"redis\", got %q", raw.RateLimits.Backend)
+		}
+		if raw.RateLimits.Backend == "redis" {
+			if raw.RateLimits.Redis == nil || raw.RateLimits.Redis.Address == "" {
+				return fmt.Errorf("config: rate_limits.redis.address is required when backend is \"redis\"")
+			}
 		}
 	}
 

@@ -1,6 +1,6 @@
 # Task 18: Redis-backed Rate Limiting
 
-**Status:** todo
+**Status:** done
 **Depends on:** 14, 17
 
 ---

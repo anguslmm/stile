@@ -7,17 +7,17 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 )
 
-func rateLimiterFromYAML(t *testing.T, yaml string) *RateLimiter {
+func localRateLimiterFromYAML(t *testing.T, yaml string) *LocalRateLimiter {
 	t.Helper()
 	cfg, err := config.LoadBytes([]byte(yaml))
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}
-	return NewRateLimiter(cfg)
+	return NewLocalRateLimiter(cfg)
 }
 
 func TestUnderLimitPasses(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -28,15 +28,15 @@ rate_limits:
 `)
 
 	for i := 0; i < 5; i++ {
-		ok, denial := rl.Allow("alice", "tool-a", "svc")
-		if !ok {
+		denial := rl.Allow("alice", "tool-a", "svc", nil)
+		if denial != nil {
 			t.Fatalf("request %d should be allowed, denied by %s", i, denial.Level)
 		}
 	}
 }
 
 func TestOverLimitRejects(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -48,8 +48,8 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		ok, _ := rl.Allow("alice", "tool-a", "svc")
-		if !ok {
+		denial := rl.Allow("alice", "tool-a", "svc", nil)
+		if denial != nil {
 			rejected++
 		}
 	}
@@ -59,7 +59,7 @@ rate_limits:
 }
 
 func TestPerCallerIsolation(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -71,18 +71,18 @@ rate_limits:
 
 	// Exhaust caller A's limit.
 	for i := 0; i < 20; i++ {
-		rl.Allow("alice", "tool-a", "svc")
+		rl.Allow("alice", "tool-a", "svc", nil)
 	}
 
 	// Caller B should still be allowed.
-	ok, denial := rl.Allow("bob", "tool-a", "svc")
-	if !ok {
+	denial := rl.Allow("bob", "tool-a", "svc", nil)
+	if denial != nil {
 		t.Fatalf("bob should not be rate limited, denied by %s", denial.Level)
 	}
 }
 
 func TestPerToolIsolation(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -94,18 +94,18 @@ rate_limits:
 
 	// Exhaust tool-a's limit for alice.
 	for i := 0; i < 20; i++ {
-		rl.Allow("alice", "tool-a", "svc")
+		rl.Allow("alice", "tool-a", "svc", nil)
 	}
 
 	// Alice should still be allowed for tool-b.
-	ok, denial := rl.Allow("alice", "tool-b", "svc")
-	if !ok {
+	denial := rl.Allow("alice", "tool-b", "svc", nil)
+	if denial != nil {
 		t.Fatalf("alice should be allowed for tool-b, denied by %s", denial.Level)
 	}
 }
 
 func TestPerUpstreamLimit(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -119,10 +119,10 @@ rate_limits:
 	rejected := 0
 	// Two callers each sending rapid requests to the same upstream.
 	for i := 0; i < 20; i++ {
-		if ok, _ := rl.Allow("alice", "tool-a", "svc"); !ok {
+		if denial := rl.Allow("alice", "tool-a", "svc", nil); denial != nil {
 			rejected++
 		}
-		if ok, _ := rl.Allow("bob", "tool-a", "svc"); !ok {
+		if denial := rl.Allow("bob", "tool-a", "svc", nil); denial != nil {
 			rejected++
 		}
 	}
@@ -132,7 +132,7 @@ rate_limits:
 }
 
 func TestNoRateLimitsConfigured(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -141,15 +141,15 @@ upstreams:
 
 	// With no rate limits, everything should pass.
 	for i := 0; i < 100; i++ {
-		ok, denial := rl.Allow("alice", "tool-a", "svc")
-		if !ok {
+		denial := rl.Allow("alice", "tool-a", "svc", nil)
+		if denial != nil {
 			t.Fatalf("request %d should be allowed with no limits configured, denied by %s", i, denial.Level)
 		}
 	}
 }
 
 func TestEmptyCallerAllowed(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -160,15 +160,15 @@ rate_limits:
 
 	// Empty caller should skip caller-level check.
 	for i := 0; i < 20; i++ {
-		ok, _ := rl.Allow("", "tool-a", "svc")
-		if !ok {
+		denial := rl.Allow("", "tool-a", "svc", nil)
+		if denial != nil {
 			t.Fatalf("request %d should be allowed with empty caller", i)
 		}
 	}
 }
 
 func TestRoleBasedCallerRates(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -185,13 +185,10 @@ rate_limits:
   default_tool: 1000/sec
 `)
 
-	// Register premium caller.
-	rl.RegisterCaller("premium-user", []string{"premium"})
-
-	// Premium user should get high limit.
+	// Premium user should get high limit (roles passed via Allow).
 	rejected := 0
 	for i := 0; i < 50; i++ {
-		if ok, _ := rl.Allow("premium-user", "tool-a", "svc"); !ok {
+		if denial := rl.Allow("premium-user", "tool-a", "svc", []string{"premium"}); denial != nil {
 			rejected++
 		}
 	}
@@ -201,7 +198,7 @@ rate_limits:
 }
 
 func TestDenialIndicatesLevel(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -211,10 +208,10 @@ rate_limits:
   default_tool: 1000/sec
 `)
 
-	rl.Allow("alice", "tool-a", "svc") // consume the 1 token
+	rl.Allow("alice", "tool-a", "svc", nil) // consume the 1 token
 
-	ok, denial := rl.Allow("alice", "tool-a", "svc")
-	if ok {
+	denial := rl.Allow("alice", "tool-a", "svc", nil)
+	if denial == nil {
 		t.Fatal("expected rejection")
 	}
 	if denial.Level != "caller" {
@@ -223,7 +220,7 @@ rate_limits:
 }
 
 func TestToolLimiterMapCapped(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -235,7 +232,7 @@ rate_limits:
 	// Create more than maxToolLimitersPerCaller distinct tools.
 	for i := 0; i < 1100; i++ {
 		tool := fmt.Sprintf("tool-%d", i)
-		rl.Allow("attacker", tool, "svc")
+		rl.Allow("attacker", tool, "svc", nil)
 	}
 
 	// The map should be capped at maxToolLimitersPerCaller.
@@ -249,7 +246,7 @@ rate_limits:
 }
 
 func TestUpstreamDefaultRate(t *testing.T) {
-	rl := rateLimiterFromYAML(t, `
+	rl := localRateLimiterFromYAML(t, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -260,7 +257,7 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		if ok, _ := rl.Allow("", "tool-a", "svc"); !ok {
+		if denial := rl.Allow("", "tool-a", "svc", nil); denial != nil {
 			rejected++
 		}
 	}

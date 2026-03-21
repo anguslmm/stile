@@ -14,9 +14,15 @@ type Denial struct {
 	Level string // "caller", "tool", or "upstream"
 }
 
-// RateLimiter enforces token bucket rate limits at three granularities:
-// per-caller, per-caller-per-tool, and per-upstream.
-type RateLimiter struct {
+// RateLimiter checks whether a request is allowed under the configured rate limits.
+// Implementations must be safe for concurrent use.
+type RateLimiter interface {
+	Allow(caller, tool, upstream string, roles []string) *Denial
+}
+
+// LocalRateLimiter enforces token bucket rate limits at three granularities:
+// per-caller, per-caller-per-tool, and per-upstream. All state is in-memory.
+type LocalRateLimiter struct {
 	mu               sync.Mutex
 	callerLimiters   map[string]*rate.Limiter
 	toolLimiters     map[string]map[string]*rate.Limiter
@@ -33,22 +39,22 @@ type RateLimiter struct {
 	roleToolRate    map[string]rate.Limit
 	roleToolBurst   map[string]int
 
-	// Per-caller overrides (set via RegisterCaller).
-	callerRate  map[string]rate.Limit
-	callerBurst map[string]int
+	// Per-caller overrides (set via registerCaller).
+	callerRate      map[string]rate.Limit
+	callerBurst     map[string]int
 	callerToolRate  map[string]rate.Limit
 	callerToolBurst map[string]int
 }
 
-// Compile-time interface check (RateLimiter has no interface to satisfy yet,
-// but we document it implements the rate limiting contract).
+// Compile-time interface check.
+var _ RateLimiter = (*LocalRateLimiter)(nil)
 
-// NewRateLimiter creates a RateLimiter from config. Per-upstream limiters are
+// NewLocalRateLimiter creates a LocalRateLimiter from config. Per-upstream limiters are
 // created eagerly; per-caller and per-tool limiters are created lazily.
-func NewRateLimiter(cfg *config.Config) *RateLimiter {
+func NewLocalRateLimiter(cfg *config.Config) *LocalRateLimiter {
 	defaults := cfg.RateLimitDefaults()
 
-	rl := &RateLimiter{
+	rl := &LocalRateLimiter{
 		callerLimiters:   make(map[string]*rate.Limiter),
 		toolLimiters:     make(map[string]map[string]*rate.Limiter),
 		upstreamLimiters: make(map[string]*rate.Limiter),
@@ -112,14 +118,49 @@ func NewRateLimiter(cfg *config.Config) *RateLimiter {
 	return rl
 }
 
-// RegisterCaller sets up per-caller rate limits based on the caller's roles.
-// Uses the most permissive (highest) rate from the caller's roles, falling
-// back to the global default if no role has an explicit rate. Safe to call
-// multiple times; only the first call takes effect.
-func (rl *RateLimiter) RegisterCaller(caller string, roles []string) {
+// Allow checks all three rate limit levels. Returns nil if allowed, or a
+// Denial indicating which limit was hit. Roles are used to determine the
+// effective rate for the caller (most permissive role wins).
+func (rl *LocalRateLimiter) Allow(caller, tool, upstream string, roles []string) *Denial {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
+	// Register caller rates from roles (idempotent after first call per caller).
+	if caller != "" && len(roles) > 0 {
+		rl.registerCallerLocked(caller, roles)
+	}
+
+	// Check per-caller limit.
+	if caller != "" {
+		lim := rl.getOrCreateCallerLimiterLocked(caller)
+		if lim != nil && !lim.Allow() {
+			return &Denial{Level: "caller"}
+		}
+	}
+
+	// Check per-caller-per-tool limit.
+	if caller != "" && tool != "" {
+		lim := rl.getOrCreateToolLimiterLocked(caller, tool)
+		if lim != nil && !lim.Allow() {
+			return &Denial{Level: "tool"}
+		}
+	}
+
+	// Check per-upstream limit.
+	if upstream != "" {
+		if lim, ok := rl.upstreamLimiters[upstream]; ok {
+			if !lim.Allow() {
+				return &Denial{Level: "upstream"}
+			}
+		}
+	}
+
+	return nil
+}
+
+// registerCallerLocked sets per-caller rates from roles. Only the first call
+// per caller takes effect.
+func (rl *LocalRateLimiter) registerCallerLocked(caller string, roles []string) {
 	if _, exists := rl.callerRate[caller]; exists {
 		return
 	}
@@ -129,15 +170,12 @@ func (rl *RateLimiter) RegisterCaller(caller string, roles []string) {
 	callerBurst := rl.defaultCallerBurst
 	for _, role := range roles {
 		if r, ok := rl.roleCallerRate[role]; ok {
-			if r > callerRate || callerRate == rate.Inf {
-				if callerRate == rate.Inf {
-					// First explicit rate overrides Inf default.
-					callerRate = r
-					callerBurst = rl.roleCallerBurst[role]
-				} else if r > callerRate {
-					callerRate = r
-					callerBurst = rl.roleCallerBurst[role]
-				}
+			if callerRate == rate.Inf {
+				callerRate = r
+				callerBurst = rl.roleCallerBurst[role]
+			} else if r > callerRate {
+				callerRate = r
+				callerBurst = rl.roleCallerBurst[role]
 			}
 		}
 	}
@@ -163,41 +201,7 @@ func (rl *RateLimiter) RegisterCaller(caller string, roles []string) {
 	rl.callerToolBurst[caller] = toolBurst
 }
 
-// Allow checks all three rate limit levels. Returns true if the request is
-// allowed, or false with a Denial indicating which limit was hit.
-func (rl *RateLimiter) Allow(caller, tool, upstream string) (bool, *Denial) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	// Check per-caller limit.
-	if caller != "" {
-		lim := rl.getOrCreateCallerLimiterLocked(caller)
-		if lim != nil && !lim.Allow() {
-			return false, &Denial{Level: "caller"}
-		}
-	}
-
-	// Check per-caller-per-tool limit.
-	if caller != "" && tool != "" {
-		lim := rl.getOrCreateToolLimiterLocked(caller, tool)
-		if lim != nil && !lim.Allow() {
-			return false, &Denial{Level: "tool"}
-		}
-	}
-
-	// Check per-upstream limit.
-	if upstream != "" {
-		if lim, ok := rl.upstreamLimiters[upstream]; ok {
-			if !lim.Allow() {
-				return false, &Denial{Level: "upstream"}
-			}
-		}
-	}
-
-	return true, nil
-}
-
-func (rl *RateLimiter) getOrCreateCallerLimiterLocked(caller string) *rate.Limiter {
+func (rl *LocalRateLimiter) getOrCreateCallerLimiterLocked(caller string) *rate.Limiter {
 	if lim, ok := rl.callerLimiters[caller]; ok {
 		return lim
 	}
@@ -220,7 +224,7 @@ func (rl *RateLimiter) getOrCreateCallerLimiterLocked(caller string) *rate.Limit
 
 const maxToolLimitersPerCaller = 1000
 
-func (rl *RateLimiter) getOrCreateToolLimiterLocked(caller, tool string) *rate.Limiter {
+func (rl *LocalRateLimiter) getOrCreateToolLimiterLocked(caller, tool string) *rate.Limiter {
 	callerTools, ok := rl.toolLimiters[caller]
 	if !ok {
 		callerTools = make(map[string]*rate.Limiter)

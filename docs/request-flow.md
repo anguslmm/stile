@@ -8,7 +8,7 @@ Config is loaded, then these are built in order:
 - **Transports** — one per upstream (`streamable-http` or `stdio`), keyed by name
 - **RouteTable** — takes the transports, calls `tools/list` on each upstream to discover what tools they offer, builds a `tool name -> upstream` map
 - **Authenticator** — backed by a caller store (SQLite or Postgres) + role config
-- **RateLimiter** — token buckets from config (per-caller, per-tool, per-upstream)
+- **RateLimiter** — created via `NewRateLimiterFromConfig`: `LocalRateLimiter` (in-memory token buckets) or `RedisRateLimiter` (Redis sliding windows) based on `rate_limits.backend`
 - **proxy.Handler** — holds the RouteTable and RateLimiter
 - **server.Server** — wires the HTTP mux, wraps the MCP endpoint with auth if configured
 
@@ -54,12 +54,12 @@ This is the core path:
 
 **c. Route** — `router.Resolve(toolName)` looks up the tool name in the route table -> returns a `Route` containing the `Upstream` (which has the `Transport`). Unknown tool -> error response.
 
-**d. Rate limit** — grab the `RateLimiter` pointer, then call `rl.Allow(caller, tool, upstream)`. This checks three token buckets in order:
-1. Per-caller bucket
-2. Per-caller-per-tool bucket
-3. Per-upstream bucket
+**d. Rate limit** — grab the `RateLimiter` (interface), then call `rl.Allow(caller, tool, upstream, roles)`. This checks three limits in order:
+1. Per-caller limit
+2. Per-caller-per-tool limit
+3. Per-upstream limit
 
-Any bucket empty -> error response with which level was hit.
+The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (single instance), `RedisRateLimiter` uses Redis sliding windows (multi-instance). Any limit exceeded -> error response with which level was hit.
 
 **e. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. This sends the original JSON-RPC request to the upstream MCP server. The `Transport` interface hides whether that's an HTTP POST or writing to a child process's stdin.
 

@@ -108,7 +108,11 @@ func main() {
 		slog.Info("audit logging enabled", "database", cfg.Audit().Database())
 	}
 
-	rateLimiter := policy.NewRateLimiter(cfg)
+	rateLimiter, err := policy.NewRateLimiterFromConfig(cfg)
+	if err != nil {
+		slog.Error("create rate limiter failed", "error", err)
+		os.Exit(1)
+	}
 	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore, proxy.WithTracer(tp.Tracer()))
 
 	// Build health checker from router upstreams.
@@ -174,7 +178,11 @@ func main() {
 		}
 
 		// Update rate limiter.
-		handler.SetRateLimiter(policy.NewRateLimiter(newCfg))
+		newRL, err := policy.NewRateLimiterFromConfig(newCfg)
+		if err != nil {
+			return nil, fmt.Errorf("create rate limiter: %w", err)
+		}
+		handler.SetRateLimiter(newRL)
 
 		// Update authenticator if auth is configured.
 		if opts != nil && opts.Authenticator != nil {
@@ -265,7 +273,10 @@ func main() {
 				slog.Error("tracer shutdown error", "error", err)
 			}
 
-			// 5. Close audit log.
+			// 5. Close rate limiter (no-op for local, closes Redis connection for redis).
+			policy.CloseRateLimiter(rateLimiter)
+
+			// 6. Close audit log.
 			if auditStore != nil {
 				auditStore.Close()
 			}
