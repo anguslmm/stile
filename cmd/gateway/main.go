@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/anguslmm/stile/internal/admin"
 	"github.com/anguslmm/stile/internal/audit"
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
@@ -84,7 +85,7 @@ func main() {
 		rt.StartBackgroundRefresh(ttl)
 	}
 
-	opts := buildAuthOpts(cfg)
+	opts, callerStore := buildAuthOpts(cfg)
 
 	var auditStore audit.Store
 	if cfg.Audit().Enabled() {
@@ -203,6 +204,11 @@ func main() {
 	}
 	opts.HealthChecker = healthChecker
 	opts.ReloadFunc = reload
+
+	// Create admin handler if auth is configured (store is available).
+	if callerStore != nil {
+		opts.AdminHandler = admin.NewHandler(callerStore, rt, reload)
+	}
 
 	srv := server.New(cfg, handler, rt, m, opts)
 
@@ -337,10 +343,10 @@ func setupLogger(cfg *config.Config) {
 	slog.SetDefault(slog.New(handler))
 }
 
-func buildAuthOpts(cfg *config.Config) *server.Options {
+func buildAuthOpts(cfg *config.Config) (*server.Options, *auth.SQLiteStore) {
 	dbPath := cfg.Server().DBPath()
 	if dbPath == "" {
-		return nil
+		return nil, nil
 	}
 
 	store, err := auth.NewSQLiteStore(dbPath)
@@ -365,5 +371,5 @@ func buildAuthOpts(cfg *config.Config) *server.Options {
 		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, store)
 	}
 
-	return opts
+	return opts, store
 }

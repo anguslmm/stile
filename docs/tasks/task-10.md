@@ -1,6 +1,6 @@
 # Task 10: Admin API for Caller Management
 
-**Status:** not started
+**Status:** done
 **Depends on:** Task 6.1 (role-based access control), Task 6.2 (decouple roles from keys), Task 6.3 (CLI — establishes CallerStore methods)
 **Needed by:** Task 11 (integration tests cover admin endpoints)
 

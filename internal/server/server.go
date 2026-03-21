@@ -44,12 +44,19 @@ type Server struct {
 	authenticator *auth.Authenticator
 }
 
+// AdminRegistrar registers admin routes on a mux.
+type AdminRegistrar interface {
+	Register(mux *http.ServeMux)
+}
+
 // Options configures optional Server behavior.
 type Options struct {
 	// Authenticator, if non-nil, wraps the MCP endpoint with auth middleware.
 	Authenticator *auth.Authenticator
 	// AdminAuth, if non-nil, wraps admin endpoints with admin auth middleware.
 	AdminAuth func(http.Handler) http.Handler
+	// AdminHandler, if non-nil, registers all /admin/ routes.
+	AdminHandler AdminRegistrar
 	// HealthChecker, if non-nil, enables /healthz and /readyz endpoints.
 	HealthChecker *health.Checker
 	// ReloadFunc, if non-nil, enables the /admin/reload endpoint.
@@ -86,18 +93,30 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 	}
 	mux.Handle("POST /mcp", mcpHandler)
 
-	var adminHandler http.Handler = http.HandlerFunc(s.handleRefresh)
-	if opts != nil && opts.AdminAuth != nil {
-		adminHandler = opts.AdminAuth(adminHandler)
-	}
-	mux.Handle("POST /admin/refresh", adminHandler)
-
-	if opts != nil && opts.ReloadFunc != nil {
-		var reloadHandler http.Handler = s.makeReloadHandler(opts.ReloadFunc)
+	if opts != nil && opts.AdminHandler != nil {
+		// Consolidated admin handler — registers all /admin/ routes.
+		adminMux := http.NewServeMux()
+		opts.AdminHandler.Register(adminMux)
+		var adminRoot http.Handler = adminMux
 		if opts.AdminAuth != nil {
-			reloadHandler = opts.AdminAuth(reloadHandler)
+			adminRoot = opts.AdminAuth(adminMux)
 		}
-		mux.Handle("POST /admin/reload", reloadHandler)
+		mux.Handle("/admin/", adminRoot)
+	} else {
+		// Fallback: individual admin routes (no caller management).
+		var refreshHandler http.Handler = http.HandlerFunc(s.handleRefresh)
+		if opts != nil && opts.AdminAuth != nil {
+			refreshHandler = opts.AdminAuth(refreshHandler)
+		}
+		mux.Handle("POST /admin/refresh", refreshHandler)
+
+		if opts != nil && opts.ReloadFunc != nil {
+			var reloadHandler http.Handler = s.makeReloadHandler(opts.ReloadFunc)
+			if opts.AdminAuth != nil {
+				reloadHandler = opts.AdminAuth(reloadHandler)
+			}
+			mux.Handle("POST /admin/reload", reloadHandler)
+		}
 	}
 
 	if opts != nil && opts.HealthChecker != nil {

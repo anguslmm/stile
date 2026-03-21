@@ -1,10 +1,18 @@
 package auth
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+var (
+	cryptoRandRead     = func(b []byte) { rand.Read(b) }
+	hexEncodeToString  = hex.EncodeToString
 )
 
 const schema = `
@@ -56,9 +64,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("auth: enable foreign keys: %w", err)
 	}
 
-	// Migrate from old schema: if api_keys has a "role" column, drop everything
-	// and recreate. Pre-v1, so destructive migration is acceptable.
-	if needsMigration(db) {
+	// Migrate from old schema: if api_keys exists but caller_roles does not,
+	// this is the pre-6.2 schema. Drop everything and recreate.
+	if needsFullMigration(db) {
 		for _, table := range []string{"api_keys", "caller_roles", "callers"} {
 			if _, err := db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
 				db.Close()
@@ -207,15 +215,16 @@ func (s *SQLiteStore) DeleteCaller(name string) error {
 
 // CallerInfo holds summary information about a caller for listing.
 type CallerInfo struct {
-	Name     string
-	KeyCount int
-	Roles    []string
+	Name      string
+	KeyCount  int
+	Roles     []string
+	CreatedAt time.Time
 }
 
-// ListCallers returns all callers with their key count and assigned roles.
+// ListCallers returns all callers with their key count, roles, and creation time.
 func (s *SQLiteStore) ListCallers() ([]CallerInfo, error) {
 	rows, err := s.db.Query(`
-		SELECT c.name, COUNT(k.id)
+		SELECT c.name, COUNT(k.id), c.created_at
 		FROM callers c
 		LEFT JOIN api_keys k ON k.caller_id = c.id
 		GROUP BY c.id
@@ -229,9 +238,11 @@ func (s *SQLiteStore) ListCallers() ([]CallerInfo, error) {
 	var callers []CallerInfo
 	for rows.Next() {
 		var ci CallerInfo
-		if err := rows.Scan(&ci.Name, &ci.KeyCount); err != nil {
+		var createdStr string
+		if err := rows.Scan(&ci.Name, &ci.KeyCount, &createdStr); err != nil {
 			return nil, fmt.Errorf("auth: scan caller: %w", err)
 		}
+		ci.CreatedAt = parseTime(createdStr)
 		roles, err := s.RolesForCaller(ci.Name)
 		if err != nil {
 			return nil, err
@@ -242,19 +253,48 @@ func (s *SQLiteStore) ListCallers() ([]CallerInfo, error) {
 	return callers, rows.Err()
 }
 
-// KeyInfo holds summary information about an API key (no secrets).
-type KeyInfo struct {
-	Label     string
-	CreatedAt string
+// CallerDetail holds full information about a caller including key metadata.
+type CallerDetail struct {
+	Name      string
+	Keys      []KeyInfo
+	CreatedAt time.Time
 }
 
-// ListKeysForCaller returns metadata for all keys belonging to a caller.
-func (s *SQLiteStore) ListKeysForCaller(callerName string) ([]KeyInfo, error) {
+// GetCaller retrieves a single caller's details including key metadata.
+func (s *SQLiteStore) GetCaller(name string) (*CallerDetail, error) {
+	var createdStr string
+	err := s.db.QueryRow("SELECT created_at FROM callers WHERE name = ?", name).Scan(&createdStr)
+	if err != nil {
+		return nil, fmt.Errorf("auth: caller %q not found", name)
+	}
+
+	keys, err := s.ListKeys(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CallerDetail{
+		Name:      name,
+		Keys:      keys,
+		CreatedAt: parseTime(createdStr),
+	}, nil
+}
+
+// KeyInfo holds summary information about an API key (no secrets).
+type KeyInfo struct {
+	ID        int64
+	Label     string
+	CreatedAt time.Time
+}
+
+// ListKeys returns metadata for all keys belonging to a caller.
+func (s *SQLiteStore) ListKeys(callerName string) ([]KeyInfo, error) {
 	rows, err := s.db.Query(`
-		SELECT COALESCE(k.label, ''), k.created_at
+		SELECT k.id, COALESCE(k.label, ''), k.created_at
 		FROM api_keys k
 		JOIN callers c ON c.id = k.caller_id
 		WHERE c.name = ?
+		ORDER BY k.id
 	`, callerName)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list keys: %w", err)
@@ -264,12 +304,31 @@ func (s *SQLiteStore) ListKeysForCaller(callerName string) ([]KeyInfo, error) {
 	var keys []KeyInfo
 	for rows.Next() {
 		var ki KeyInfo
-		if err := rows.Scan(&ki.Label, &ki.CreatedAt); err != nil {
+		var createdStr string
+		if err := rows.Scan(&ki.ID, &ki.Label, &createdStr); err != nil {
 			return nil, fmt.Errorf("auth: scan key: %w", err)
 		}
+		ki.CreatedAt = parseTime(createdStr)
 		keys = append(keys, ki)
 	}
 	return keys, rows.Err()
+}
+
+// DeleteKey removes an API key by caller name and key ID.
+func (s *SQLiteStore) DeleteKey(callerName string, keyID int64) error {
+	result, err := s.db.Exec(`
+		DELETE FROM api_keys
+		WHERE id = ?
+		AND caller_id = (SELECT id FROM callers WHERE name = ?)
+	`, keyID, callerName)
+	if err != nil {
+		return fmt.Errorf("auth: delete key: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("auth: key %d not found for caller %q", keyID, callerName)
+	}
+	return nil
 }
 
 // KeyCountForCaller returns the number of API keys a caller has.
@@ -309,14 +368,48 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// needsMigration checks if the database has the old schema (api_keys with a
-// "role" column). Returns true if migration is needed, false for fresh or
-// already-migrated databases.
-func needsMigration(db *sql.DB) bool {
-	var count int
+// GenerateAPIKey creates a cryptographically random API key.
+func GenerateAPIKey() string {
+	b := make([]byte, 16)
+	cryptoRandRead(b)
+	return "sk-" + hexEncodeToString(b)
+}
+
+// needsFullMigration checks if the database has the pre-6.2 schema
+// (api_keys exists but caller_roles does not). Returns true if a full
+// drop-and-recreate migration is needed.
+func needsFullMigration(db *sql.DB) bool {
+	// Check if api_keys table exists.
+	var apiKeysExists int
 	err := db.QueryRow(`
-		SELECT COUNT(*) FROM pragma_table_info('api_keys')
-		WHERE name = 'role'
-	`).Scan(&count)
-	return err == nil && count > 0
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='api_keys'
+	`).Scan(&apiKeysExists)
+	if err != nil || apiKeysExists == 0 {
+		return false // Fresh database, no migration needed.
+	}
+
+	// Check if caller_roles table exists.
+	var callerRolesExists int
+	err = db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='caller_roles'
+	`).Scan(&callerRolesExists)
+	if err != nil {
+		return false
+	}
+
+	// Pre-6.2: api_keys exists but caller_roles doesn't.
+	return callerRolesExists == 0
+}
+
+// parseTime parses a SQLite DATETIME string into time.Time.
+func parseTime(s string) time.Time {
+	// modernc.org/sqlite returns RFC3339; other drivers may return space-separated.
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

@@ -46,7 +46,10 @@ func TestListCallers(t *testing.T) {
 		t.Errorf("expected 1 key for alice, got %d", callers[0].KeyCount)
 	}
 	if len(callers[0].Roles) != 2 {
-		t.Errorf("expected 2 roles for alice, got %d", len(callers[0].Roles))
+		t.Errorf("expected 2 roles for alice, got %d: %v", len(callers[0].Roles), callers[0].Roles)
+	}
+	if callers[0].CreatedAt.IsZero() {
+		t.Error("expected non-zero created_at for alice")
 	}
 
 	if callers[1].Name != "bob" {
@@ -105,7 +108,7 @@ func TestKeyCountForCaller(t *testing.T) {
 	}
 }
 
-func TestListKeysForCaller(t *testing.T) {
+func TestListKeys(t *testing.T) {
 	store := newTestStore(t)
 
 	if err := store.AddCaller("alice"); err != nil {
@@ -121,7 +124,7 @@ func TestListKeysForCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keys, err := store.ListKeysForCaller("alice")
+	keys, err := store.ListKeys("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,15 +132,19 @@ func TestListKeysForCaller(t *testing.T) {
 		t.Fatalf("expected 2 keys, got %d", len(keys))
 	}
 
-	labels := map[string]bool{}
 	for _, k := range keys {
-		labels[k.Label] = true
-		if k.CreatedAt == "" {
-			t.Error("expected non-empty created_at")
+		if k.ID == 0 {
+			t.Error("expected non-zero key ID")
+		}
+		if k.CreatedAt.IsZero() {
+			t.Error("expected non-zero created_at")
 		}
 	}
-	if !labels["laptop"] || !labels["desktop"] {
-		t.Errorf("expected laptop and desktop labels, got %v", keys)
+	if keys[0].Label != "laptop" {
+		t.Errorf("expected laptop, got %q", keys[0].Label)
+	}
+	if keys[1].Label != "desktop" {
+		t.Errorf("expected desktop, got %q", keys[1].Label)
 	}
 }
 
@@ -197,5 +204,96 @@ func TestRevokeKeyNotFound(t *testing.T) {
 	err := store.RevokeKey("alice", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent key label")
+	}
+}
+
+func TestGetCaller(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.AddCaller("alice"); err != nil {
+		t.Fatal(err)
+	}
+	h1 := sha256.Sum256([]byte("sk-1"))
+	if err := store.AddKey("alice", h1, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := store.GetCaller("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Name != "alice" {
+		t.Errorf("expected alice, got %q", detail.Name)
+	}
+	if detail.CreatedAt.IsZero() {
+		t.Error("expected non-zero created_at")
+	}
+	if len(detail.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(detail.Keys))
+	}
+	if detail.Keys[0].Label != "laptop" {
+		t.Errorf("expected laptop, got %q", detail.Keys[0].Label)
+	}
+}
+
+func TestGetCallerNotFound(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.GetCaller("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent caller")
+	}
+}
+
+func TestDeleteKey(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.AddCaller("alice"); err != nil {
+		t.Fatal(err)
+	}
+	h1 := sha256.Sum256([]byte("sk-1"))
+	if err := store.AddKey("alice", h1, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	h2 := sha256.Sum256([]byte("sk-2"))
+	if err := store.AddKey("alice", h2, "desktop"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := store.ListKeys("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(keys))
+	}
+
+	// Delete the first key by ID.
+	if err := store.DeleteKey("alice", keys[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	remaining, err := store.ListKeys("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 key after delete, got %d", len(remaining))
+	}
+	if remaining[0].ID != keys[1].ID {
+		t.Errorf("expected key %d to remain, got %d", keys[1].ID, remaining[0].ID)
+	}
+}
+
+func TestDeleteKeyNotFound(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.AddCaller("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.DeleteKey("alice", 9999)
+	if err == nil {
+		t.Fatal("expected error for nonexistent key ID")
 	}
 }

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -258,7 +256,7 @@ func runRevokeKey(args []string) {
 
 	// If no label given, list keys for the caller.
 	if *label == "" {
-		keys, err := store.ListKeysForCaller(*caller)
+		keys, err := store.ListKeys(*caller)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -269,7 +267,7 @@ func runRevokeKey(args []string) {
 		}
 		fmt.Printf("Keys for %q (use --label to revoke):\n", *caller)
 		for _, k := range keys {
-			fmt.Printf("  label=%q  created=%s\n", k.Label, k.CreatedAt)
+			fmt.Printf("  label=%q  created=%s\n", k.Label, k.CreatedAt.Format("2006-01-02 15:04:05"))
 		}
 		os.Exit(0)
 	}
@@ -282,7 +280,5 @@ func runRevokeKey(args []string) {
 }
 
 func generateAPIKey() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return "sk-" + hex.EncodeToString(b)
+	return auth.GenerateAPIKey()
 }
