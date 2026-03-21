@@ -36,6 +36,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/callers/{name}/keys", h.createKey)
 	mux.HandleFunc("GET /admin/callers/{name}/keys", h.listKeys)
 	mux.HandleFunc("DELETE /admin/callers/{name}/keys/{id}", h.deleteKey)
+	mux.HandleFunc("POST /admin/callers/{name}/roles", h.assignRole)
+	mux.HandleFunc("GET /admin/callers/{name}/roles", h.listRoles)
+	mux.HandleFunc("DELETE /admin/callers/{name}/roles/{role}", h.deleteRole)
 	mux.HandleFunc("POST /admin/refresh", h.refresh)
 	if h.reloadFunc != nil {
 		mux.HandleFunc("POST /admin/reload", h.reload)
@@ -117,9 +120,19 @@ func (h *Handler) getCaller(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	roles, err := h.store.RolesForCaller(name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+	if roles == nil {
+		roles = []string{}
+	}
+
 	writeJSON(w, http.StatusOK, callerDetailResp{
 		Name:      detail.Name,
 		Keys:      keys,
+		Roles:     roles,
 		CreatedAt: detail.CreatedAt,
 	})
 }
@@ -207,6 +220,78 @@ func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request) {
+	callerName := r.PathValue("name")
+
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid JSON"))
+		return
+	}
+	if req.Role == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("role is required"))
+		return
+	}
+
+	if err := h.store.AssignRole(callerName, req.Role); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeJSON(w, http.StatusNotFound, errorBody("caller not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+
+	roles, err := h.store.RolesForCaller(callerName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+	if roles == nil {
+		roles = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":  callerName,
+		"roles": roles,
+	})
+}
+
+func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
+	callerName := r.PathValue("name")
+
+	// Verify caller exists.
+	if _, err := h.store.GetCaller(callerName); err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody("caller not found"))
+		return
+	}
+
+	roles, err := h.store.RolesForCaller(callerName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+	if roles == nil {
+		roles = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"roles": roles})
+}
+
+func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request) {
+	callerName := r.PathValue("name")
+	role := r.PathValue("role")
+
+	if err := h.store.UnassignRole(callerName, role); err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody("role not found"))
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	result := h.router.Refresh(r.Context())
 	writeJSON(w, http.StatusOK, result)
@@ -241,6 +326,7 @@ type callerListItem struct {
 type callerDetailResp struct {
 	Name      string    `json:"name"`
 	Keys      []keyItem `json:"keys"`
+	Roles     []string  `json:"roles"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

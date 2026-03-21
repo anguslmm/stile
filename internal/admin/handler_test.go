@@ -449,6 +449,195 @@ func TestRevokeKeyNotFound(t *testing.T) {
 	resp.Body.Close()
 }
 
+// --- Test: Assign role ---
+
+func TestAssignRole(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+
+	resp := doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles",
+		map[string]string{"role": "dev"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Name  string   `json:"name"`
+		Roles []string `json:"roles"`
+	}
+	readJSON(t, resp, &body)
+	if body.Name != "angus" {
+		t.Errorf("expected name=angus, got %q", body.Name)
+	}
+	if len(body.Roles) != 1 || body.Roles[0] != "dev" {
+		t.Errorf("expected [dev], got %v", body.Roles)
+	}
+}
+
+func TestAssignRoleIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "dev"})
+
+	resp := doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles",
+		map[string]string{"role": "dev"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Roles []string `json:"roles"`
+	}
+	readJSON(t, resp, &body)
+	if len(body.Roles) != 1 {
+		t.Errorf("expected 1 role (no duplicate), got %v", body.Roles)
+	}
+}
+
+func TestAssignRoleUnknownCaller(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	resp := doRequest(t, "POST", ts.URL+"/admin/callers/nobody/roles",
+		map[string]string{"role": "dev"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAssignRoleEmpty(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+
+	resp := doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles",
+		map[string]string{"role": ""})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- Test: Unassign role ---
+
+func TestUnassignRole(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "dev"})
+
+	resp := doRequest(t, "DELETE", ts.URL+"/admin/callers/angus/roles/dev", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Verify role is gone.
+	resp = doRequest(t, "GET", ts.URL+"/admin/callers/angus/roles", nil)
+	var body struct {
+		Roles []string `json:"roles"`
+	}
+	readJSON(t, resp, &body)
+	if len(body.Roles) != 0 {
+		t.Errorf("expected no roles after unassign, got %v", body.Roles)
+	}
+}
+
+func TestUnassignRoleNotAssigned(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+
+	resp := doRequest(t, "DELETE", ts.URL+"/admin/callers/angus/roles/nonexistent", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- Test: List roles ---
+
+func TestListRoles(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "dev"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "prod"})
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/callers/angus/roles", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Roles []string `json:"roles"`
+	}
+	readJSON(t, resp, &body)
+	if len(body.Roles) != 2 {
+		t.Fatalf("expected 2 roles, got %v", body.Roles)
+	}
+}
+
+func TestListRolesUnknownCaller(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/callers/nobody/roles", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- Test: Caller detail includes roles ---
+
+func TestGetCallerIncludesRoles(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	ts := newTestServer(t, store, rt)
+	defer ts.Close()
+
+	doRequest(t, "POST", ts.URL+"/admin/callers", map[string]string{"name": "angus"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "dev"})
+	doRequest(t, "POST", ts.URL+"/admin/callers/angus/roles", map[string]string{"role": "prod"})
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/callers/angus", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body callerDetailResp
+	readJSON(t, resp, &body)
+	if len(body.Roles) != 2 {
+		t.Fatalf("expected 2 roles in caller detail, got %v", body.Roles)
+	}
+}
+
 // --- Test: Admin auth required ---
 
 func TestAdminAuthRequired(t *testing.T) {
