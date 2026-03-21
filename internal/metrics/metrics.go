@@ -22,6 +22,8 @@ type Metrics struct {
 	upstreamHealth      otelmetric.Float64Gauge
 	rateLimitRejections otelmetric.Int64Counter
 	toolCacheRefresh    otelmetric.Int64Counter
+	circuitState        otelmetric.Float64Gauge
+	retriesTotal        otelmetric.Int64Counter
 	handler             http.Handler
 }
 
@@ -87,12 +89,28 @@ func newMetrics(registerer prometheus.Registerer, gatherer prometheus.Gatherer) 
 		panic("metrics: create stile_tool_cache_refresh counter: " + err.Error())
 	}
 
+	circuitState, err := meter.Float64Gauge("stile_circuit_state",
+		otelmetric.WithDescription("Circuit breaker state per upstream (0=closed, 1=open, 2=half-open)"),
+	)
+	if err != nil {
+		panic("metrics: create stile_circuit_state gauge: " + err.Error())
+	}
+
+	retriesTotal, err := meter.Int64Counter("stile_retries",
+		otelmetric.WithDescription("Total retry attempts per upstream"),
+	)
+	if err != nil {
+		panic("metrics: create stile_retries counter: " + err.Error())
+	}
+
 	return &Metrics{
 		requestsTotal:       requestsTotal,
 		requestDuration:     requestDuration,
 		upstreamHealth:      upstreamHealth,
 		rateLimitRejections: rateLimitRejections,
 		toolCacheRefresh:    toolCacheRefresh,
+		circuitState:        circuitState,
+		retriesTotal:        retriesTotal,
 		handler:             promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}),
 	}
 }
@@ -145,6 +163,24 @@ func (m *Metrics) RecordToolCacheRefresh(upstream, status string) {
 		otelmetric.WithAttributes(
 			attribute.String("upstream", upstream),
 			attribute.String("status", status),
+		),
+	)
+}
+
+// SetCircuitState sets the circuit breaker state gauge for an upstream.
+func (m *Metrics) SetCircuitState(upstream string, val float64) {
+	m.circuitState.Record(nil, val,
+		otelmetric.WithAttributes(
+			attribute.String("upstream", upstream),
+		),
+	)
+}
+
+// RecordRetry increments the retry counter for an upstream.
+func (m *Metrics) RecordRetry(upstream string) {
+	m.retriesTotal.Add(nil, 1,
+		otelmetric.WithAttributes(
+			attribute.String("upstream", upstream),
 		),
 	)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/proxy"
+	"github.com/anguslmm/stile/internal/resilience"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/server"
 	"github.com/anguslmm/stile/internal/transport"
@@ -1331,5 +1332,278 @@ upstreams:
 	}
 	if receivedAuth != "" && !strings.Contains(receivedAuth, "secret-token-123") {
 		t.Errorf("expected bearer token in auth header, got %q", receivedAuth)
+	}
+}
+
+// ============================================================
+// Resilience Tests (circuit breaker + retry)
+// ============================================================
+
+func TestCircuitBreakerTripsAndFailsFast(t *testing.T) {
+	callCount := 0
+	mt := newMockTransport([]transport.ToolSchema{
+		{Name: "fragile", Description: "breaks easily"},
+	})
+
+	// Parse config with circuit breaker so we can wrap the transport.
+	cfg, err := config.LoadBytes([]byte(`
+upstreams:
+  - name: fragile-upstream
+    transport: streamable-http
+    url: http://placeholder
+    circuit_breaker:
+      failure_threshold: 3
+      cooldown: 1h
+`))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	// After initial tool discovery, switch to failing mode.
+	originalRT := mt.roundTrip
+	mt.roundTrip = func(ctx context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+		if req.Method == "tools/list" || req.Method == "initialize" {
+			return originalRT(ctx, req)
+		}
+		callCount++
+		return nil, &transport.ConnectError{Err: fmt.Errorf("connection refused")}
+	}
+
+	// Wrap with resilience.
+	wrapped := resilience.Wrap(mt, cfg.Upstreams()[0], nil)
+
+	gw := newTestGateway(t,
+		withConfig(`
+server:
+  address: ":0"
+upstreams:
+  - name: fragile-upstream
+    transport: streamable-http
+    url: http://placeholder
+`),
+		withTransport("fragile-upstream", wrapped),
+	)
+
+	// Send requests that fail — should trip after 3.
+	for i := 0; i < 3; i++ {
+		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile"}, "")
+		if resp.Error == nil {
+			t.Fatalf("call %d: expected error", i)
+		}
+	}
+
+	innerCallsBefore := callCount
+
+	// Next request should fail fast (circuit open) without hitting inner transport.
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile"}, "")
+	if resp.Error == nil {
+		t.Fatal("expected circuit open error")
+	}
+	if !strings.Contains(resp.Error.Message, "circuit open") {
+		t.Errorf("expected 'circuit open' error, got: %s", resp.Error.Message)
+	}
+
+	if callCount != innerCallsBefore {
+		t.Error("expected no new calls to inner transport when circuit is open")
+	}
+}
+
+func TestRetrySucceedsOnTransientUpstreamFailure(t *testing.T) {
+	callCount := 0
+	mt := newMockTransport([]transport.ToolSchema{
+		{Name: "flaky-tool", Description: "sometimes works"},
+	})
+
+	cfg, err := config.LoadBytes([]byte(`
+upstreams:
+  - name: retry-upstream
+    transport: streamable-http
+    url: http://placeholder
+    retry:
+      max_attempts: 3
+      backoff: 1ms
+      retryable_errors: [connection_error]
+`))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	originalRT := mt.roundTrip
+	mt.roundTrip = func(ctx context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+		if req.Method == "tools/list" || req.Method == "initialize" {
+			return originalRT(ctx, req)
+		}
+		callCount++
+		if callCount <= 2 {
+			return nil, &transport.ConnectError{Err: fmt.Errorf("connection refused")}
+		}
+		return originalRT(ctx, req)
+	}
+
+	wrapped := resilience.Wrap(mt, cfg.Upstreams()[0], nil)
+
+	gw := newTestGateway(t,
+		withConfig(`
+server:
+  address: ":0"
+upstreams:
+  - name: retry-upstream
+    transport: streamable-http
+    url: http://placeholder
+`),
+		withTransport("retry-upstream", wrapped),
+	)
+
+	// Should succeed on the 3rd attempt.
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky-tool"}, "")
+	if resp.Error != nil {
+		t.Fatalf("expected success after retries, got: %s", resp.Error.Message)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 attempts, got %d", callCount)
+	}
+}
+
+func TestCircuitBreakerRecoveryEndToEnd(t *testing.T) {
+	callCount := 0
+	failing := true
+	mt := newMockTransport([]transport.ToolSchema{
+		{Name: "recoverable", Description: "comes back"},
+	})
+
+	cfg, err := config.LoadBytes([]byte(`
+upstreams:
+  - name: recovery-upstream
+    transport: streamable-http
+    url: http://placeholder
+    circuit_breaker:
+      failure_threshold: 2
+      cooldown: 50ms
+`))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	originalRT := mt.roundTrip
+	mt.roundTrip = func(ctx context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+		if req.Method == "tools/list" || req.Method == "initialize" {
+			return originalRT(ctx, req)
+		}
+		callCount++
+		if failing {
+			return nil, &transport.ConnectError{Err: fmt.Errorf("down")}
+		}
+		return originalRT(ctx, req)
+	}
+
+	wrapped := resilience.Wrap(mt, cfg.Upstreams()[0], nil)
+
+	gw := newTestGateway(t,
+		withConfig(`
+server:
+  address: ":0"
+upstreams:
+  - name: recovery-upstream
+    transport: streamable-http
+    url: http://placeholder
+`),
+		withTransport("recovery-upstream", wrapped),
+	)
+
+	// Trip the circuit.
+	for i := 0; i < 2; i++ {
+		gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	}
+
+	// Circuit is open — fails fast.
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "circuit open") {
+		t.Fatal("expected circuit open error")
+	}
+
+	// Upstream recovers.
+	failing = false
+
+	// Wait for cooldown.
+	time.Sleep(60 * time.Millisecond)
+
+	// Half-open probe should succeed, closing the circuit.
+	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	if resp.Error != nil {
+		t.Fatalf("expected success after recovery, got: %s", resp.Error.Message)
+	}
+
+	// Subsequent requests should work normally.
+	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	if resp.Error != nil {
+		t.Fatalf("expected continued success, got: %s", resp.Error.Message)
+	}
+}
+
+func TestResilienceMetricsPopulated(t *testing.T) {
+	mt := newMockTransport([]transport.ToolSchema{
+		{Name: "metered", Description: "tracked"},
+	})
+
+	cfg, err := config.LoadBytes([]byte(`
+upstreams:
+  - name: metered-upstream
+    transport: streamable-http
+    url: http://placeholder
+    circuit_breaker:
+      failure_threshold: 10
+    retry:
+      max_attempts: 2
+      backoff: 1ms
+      retryable_errors: [connection_error]
+`))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	reg := prometheus.NewRegistry()
+	m := metrics.NewForRegistry(reg)
+
+	callCount := 0
+	originalRT := mt.roundTrip
+	mt.roundTrip = func(ctx context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+		if req.Method == "tools/list" || req.Method == "initialize" {
+			return originalRT(ctx, req)
+		}
+		callCount++
+		if callCount <= 1 {
+			return nil, &transport.ConnectError{Err: fmt.Errorf("blip")}
+		}
+		return originalRT(ctx, req)
+	}
+
+	wrapped := resilience.Wrap(mt, cfg.Upstreams()[0], m)
+
+	gw := newTestGateway(t,
+		withConfig(`
+server:
+  address: ":0"
+upstreams:
+  - name: metered-upstream
+    transport: streamable-http
+    url: http://placeholder
+`),
+		withTransport("metered-upstream", wrapped),
+	)
+	// Override the gateway's metrics/registry so we can check them.
+	gw.Registry = reg
+	gw.Metrics = m
+
+	// This request fails once then succeeds on retry.
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "metered"}, "")
+	if resp.Error != nil {
+		t.Fatalf("expected success after retry, got: %s", resp.Error.Message)
+	}
+
+	if !metricsContain(t, reg, "stile_retries") {
+		t.Error("expected stile_retries metric to be populated")
+	}
+	if !metricsContain(t, reg, "stile_circuit_state") {
+		t.Error("expected stile_circuit_state metric to be populated")
 	}
 }

@@ -5,7 +5,7 @@ This document traces the complete path a request follows through Stile, from an 
 ## 1. Startup wiring (`cmd/gateway/main.go`)
 
 Config is loaded, then these are built in order:
-- **Transports** — one per upstream (`streamable-http` or `stdio`), keyed by name
+- **Transports** — one per upstream (`streamable-http` or `stdio`), keyed by name. If an upstream has `circuit_breaker` or `retry` config, the transport is wrapped in a `ResilientTransport` that adds circuit breaking and retries.
 - **RouteTable** — takes the transports, calls `tools/list` on each upstream to discover what tools they offer, builds a `tool name -> upstream` map
 - **Authenticator** — backed by a caller store (SQLite or Postgres) + role config
 - **RateLimiter** — created via `NewRateLimiterFromConfig`: `LocalRateLimiter` (in-memory token buckets) or `RedisRateLimiter` (Redis sliding windows) based on `rate_limits.backend`
@@ -60,7 +60,12 @@ This is the core path:
 
 The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (single instance), `RedisRateLimiter` uses Redis sliding windows (multi-instance). Any limit exceeded -> error response with which level was hit.
 
-**e. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. This sends the original JSON-RPC request to the upstream MCP server. The `Transport` interface hides whether that's an HTTP POST or writing to a child process's stdin.
+**e. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
+1. **Circuit breaker** — if the upstream's circuit is open, the request fails immediately with `"upstream circuit open"`. After a cooldown period, one probe request is allowed through (half-open state). If it succeeds, the circuit closes; if it fails, the circuit reopens.
+2. **Retry loop** — on retryable errors (connection failures or configured HTTP status codes like 502/503/504), the request is retried with jittered exponential backoff up to `max_attempts`.
+3. **Actual transport** — sends the JSON-RPC request to the upstream. Per-upstream `timeout` controls the HTTP `ResponseHeaderTimeout`.
+
+The `Transport` interface hides whether the underlying transport is an HTTP POST or writing to a child process's stdin.
 
 **f. Response** — `RoundTrip` returns a `TransportResult`, which is either:
 - `JSONResult` — upstream returned `application/json`. The response is already parsed.
@@ -122,7 +127,10 @@ handleSingle
                      |-- router.Resolve(toolName) -> Route{Upstream, Transport}
                      |-- rateLimiter.Allow(caller, tool, upstream)
                      |-- transport.RoundTrip(req) -> TransportResult
-                     |    |-- HTTPTransport: POST to remote server
+                     |    |-- [ResilientTransport wrapper, if configured:]
+                     |    |    |-- circuit breaker check (fail fast if open)
+                     |    |    |-- retry loop with jittered backoff
+                     |    |-- HTTPTransport: POST to remote server (per-upstream timeout)
                      |    |-- StdioTransport: write to child stdin, read stdout
                      |-- result.WriteResponse(w) -> JSON or SSE back to agent
                      |-- audit + metrics

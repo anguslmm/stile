@@ -79,15 +79,57 @@ type UpstreamConfig interface {
 	Name() string
 	Tools() []string
 	RateLimit() *RateLimit
+	Timeout() time.Duration
+	CircuitBreaker() *CircuitBreakerConfig
+	Retry() *RetryConfig
+}
+
+// CircuitBreakerConfig provides read-only access to circuit breaker settings.
+type CircuitBreakerConfig struct {
+	failureThreshold int
+	cooldown         time.Duration
+}
+
+// FailureThreshold returns the number of consecutive failures to trip the circuit.
+func (c *CircuitBreakerConfig) FailureThreshold() int { return c.failureThreshold }
+
+// Cooldown returns the time to wait in open state before probing.
+func (c *CircuitBreakerConfig) Cooldown() time.Duration { return c.cooldown }
+
+// RetryConfig provides read-only access to retry settings.
+type RetryConfig struct {
+	maxAttempts     int
+	backoff         time.Duration
+	maxBackoff      time.Duration
+	retryableErrors []string
+}
+
+// MaxAttempts returns the total number of attempts including the original.
+func (r *RetryConfig) MaxAttempts() int { return r.maxAttempts }
+
+// Backoff returns the initial backoff duration.
+func (r *RetryConfig) Backoff() time.Duration { return r.backoff }
+
+// MaxBackoff returns the maximum backoff duration.
+func (r *RetryConfig) MaxBackoff() time.Duration { return r.maxBackoff }
+
+// RetryableErrors returns a copy of the retryable error types.
+func (r *RetryConfig) RetryableErrors() []string {
+	out := make([]string, len(r.retryableErrors))
+	copy(out, r.retryableErrors)
+	return out
 }
 
 // HTTPUpstreamConfig is an UpstreamConfig for streamable-http upstreams.
 type HTTPUpstreamConfig struct {
-	name      string
-	url       string
-	auth      *AuthConfig
-	tools     []string
-	rateLimit *RateLimit
+	name           string
+	url            string
+	auth           *AuthConfig
+	tools          []string
+	rateLimit      *RateLimit
+	timeout        time.Duration
+	circuitBreaker *CircuitBreakerConfig
+	retry          *RetryConfig
 }
 
 func (*HTTPUpstreamConfig) upstreamConfig() {}
@@ -107,13 +149,25 @@ func (h *HTTPUpstreamConfig) Tools() []string {
 	return out
 }
 
+// Timeout returns the per-upstream request timeout (default 60s).
+func (h *HTTPUpstreamConfig) Timeout() time.Duration { return h.timeout }
+
+// CircuitBreaker returns the circuit breaker config, or nil if not set.
+func (h *HTTPUpstreamConfig) CircuitBreaker() *CircuitBreakerConfig { return h.circuitBreaker }
+
+// Retry returns the retry config, or nil if not set.
+func (h *HTTPUpstreamConfig) Retry() *RetryConfig { return h.retry }
+
 // StdioUpstreamConfig is an UpstreamConfig for stdio upstreams.
 type StdioUpstreamConfig struct {
-	name      string
-	command   []string
-	env       map[string]string
-	tools     []string
-	rateLimit *RateLimit
+	name           string
+	command        []string
+	env            map[string]string
+	tools          []string
+	rateLimit      *RateLimit
+	timeout        time.Duration
+	circuitBreaker *CircuitBreakerConfig
+	retry          *RetryConfig
 }
 
 func (*StdioUpstreamConfig) upstreamConfig() {}
@@ -152,6 +206,15 @@ func (s *StdioUpstreamConfig) Tools() []string {
 	copy(out, s.tools)
 	return out
 }
+
+// Timeout returns the per-upstream request timeout (default 60s).
+func (s *StdioUpstreamConfig) Timeout() time.Duration { return s.timeout }
+
+// CircuitBreaker returns the circuit breaker config, or nil if not set.
+func (s *StdioUpstreamConfig) CircuitBreaker() *CircuitBreakerConfig { return s.circuitBreaker }
+
+// Retry returns the retry config, or nil if not set.
+func (s *StdioUpstreamConfig) Retry() *RetryConfig { return s.retry }
 
 // Compile-time interface satisfaction checks.
 var (
@@ -529,14 +592,29 @@ type rawServerConfig struct {
 }
 
 type rawUpstreamConfig struct {
-	Name      string            `yaml:"name"`
-	URL       string            `yaml:"url"`
-	Command   []string          `yaml:"command"`
-	Env       map[string]string `yaml:"env"`
-	Transport string            `yaml:"transport"`
-	Auth      *rawAuthConfig    `yaml:"auth"`
-	Tools     []string          `yaml:"tools"`
-	RateLimit string            `yaml:"rate_limit"`
+	Name           string                   `yaml:"name"`
+	URL            string                   `yaml:"url"`
+	Command        []string                 `yaml:"command"`
+	Env            map[string]string        `yaml:"env"`
+	Transport      string                   `yaml:"transport"`
+	Auth           *rawAuthConfig           `yaml:"auth"`
+	Tools          []string                 `yaml:"tools"`
+	RateLimit      string                   `yaml:"rate_limit"`
+	Timeout        string                   `yaml:"timeout"`
+	CircuitBreaker *rawCircuitBreakerConfig `yaml:"circuit_breaker"`
+	Retry          *rawRetryConfig          `yaml:"retry"`
+}
+
+type rawCircuitBreakerConfig struct {
+	FailureThreshold int    `yaml:"failure_threshold"`
+	Cooldown         string `yaml:"cooldown"`
+}
+
+type rawRetryConfig struct {
+	MaxAttempts     int      `yaml:"max_attempts"`
+	Backoff         string   `yaml:"backoff"`
+	MaxBackoff      string   `yaml:"max_backoff"`
+	RetryableErrors []string `yaml:"retryable_errors"`
 }
 
 type rawAuthConfig struct {
@@ -663,13 +741,84 @@ func convert(raw rawConfig) (*Config, error) {
 			copy(tools, ru.Tools)
 		}
 
+		// Parse resilience settings common to all upstream types.
+		timeout := 60 * time.Second
+		if ru.Timeout != "" {
+			t, err := time.ParseDuration(ru.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("config: upstream %q: invalid timeout %q: %w", ru.Name, ru.Timeout, err)
+			}
+			if t <= 0 {
+				return nil, fmt.Errorf("config: upstream %q: timeout must be positive", ru.Name)
+			}
+			timeout = t
+		}
+
+		var cbCfg *CircuitBreakerConfig
+		if ru.CircuitBreaker != nil {
+			threshold := ru.CircuitBreaker.FailureThreshold
+			if threshold <= 0 {
+				threshold = 5
+			}
+			cooldown := 30 * time.Second
+			if ru.CircuitBreaker.Cooldown != "" {
+				cd, err := time.ParseDuration(ru.CircuitBreaker.Cooldown)
+				if err != nil {
+					return nil, fmt.Errorf("config: upstream %q: invalid circuit_breaker.cooldown %q: %w", ru.Name, ru.CircuitBreaker.Cooldown, err)
+				}
+				if cd <= 0 {
+					return nil, fmt.Errorf("config: upstream %q: circuit_breaker.cooldown must be positive", ru.Name)
+				}
+				cooldown = cd
+			}
+			cbCfg = &CircuitBreakerConfig{failureThreshold: threshold, cooldown: cooldown}
+		}
+
+		var retryCfg *RetryConfig
+		if ru.Retry != nil {
+			maxAttempts := ru.Retry.MaxAttempts
+			if maxAttempts <= 0 {
+				maxAttempts = 1
+			}
+			backoff := 100 * time.Millisecond
+			if ru.Retry.Backoff != "" {
+				b, err := time.ParseDuration(ru.Retry.Backoff)
+				if err != nil {
+					return nil, fmt.Errorf("config: upstream %q: invalid retry.backoff %q: %w", ru.Name, ru.Retry.Backoff, err)
+				}
+				backoff = b
+			}
+			maxBackoff := 2 * time.Second
+			if ru.Retry.MaxBackoff != "" {
+				mb, err := time.ParseDuration(ru.Retry.MaxBackoff)
+				if err != nil {
+					return nil, fmt.Errorf("config: upstream %q: invalid retry.max_backoff %q: %w", ru.Name, ru.Retry.MaxBackoff, err)
+				}
+				maxBackoff = mb
+			}
+			retryableErrors := []string{"connection_error"}
+			if len(ru.Retry.RetryableErrors) > 0 {
+				retryableErrors = make([]string, len(ru.Retry.RetryableErrors))
+				copy(retryableErrors, ru.Retry.RetryableErrors)
+			}
+			retryCfg = &RetryConfig{
+				maxAttempts:     maxAttempts,
+				backoff:         backoff,
+				maxBackoff:      maxBackoff,
+				retryableErrors: retryableErrors,
+			}
+		}
+
 		switch ru.Transport {
 		case "streamable-http":
 			h := &HTTPUpstreamConfig{
-				name:      ru.Name,
-				url:       ru.URL,
-				tools:     tools,
-				rateLimit: rl,
+				name:           ru.Name,
+				url:            ru.URL,
+				tools:          tools,
+				rateLimit:      rl,
+				timeout:        timeout,
+				circuitBreaker: cbCfg,
+				retry:          retryCfg,
 			}
 			if ru.Auth != nil {
 				h.auth = &AuthConfig{
@@ -680,9 +829,12 @@ func convert(raw rawConfig) (*Config, error) {
 			cfg.upstreams[i] = h
 		case "stdio":
 			s := &StdioUpstreamConfig{
-				name:      ru.Name,
-				tools:     tools,
-				rateLimit: rl,
+				name:           ru.Name,
+				tools:          tools,
+				rateLimit:      rl,
+				timeout:        timeout,
+				circuitBreaker: cbCfg,
+				retry:          retryCfg,
 			}
 			if ru.Command != nil {
 				s.command = make([]string, len(ru.Command))

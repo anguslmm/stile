@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const validConfig = `
@@ -840,5 +841,233 @@ upstreams:
 	}
 	if cfg.Telemetry().Traces().Endpoint() != "localhost:4318" {
 		t.Errorf("default endpoint = %q, want localhost:4318", cfg.Telemetry().Traces().Endpoint())
+	}
+}
+
+func TestTimeoutDefault(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.Timeout().Seconds() != 60 {
+		t.Errorf("default timeout = %v, want 60s", u.Timeout())
+	}
+}
+
+func TestTimeoutExplicit(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    timeout: 5s
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.Timeout().Seconds() != 5 {
+		t.Errorf("timeout = %v, want 5s", u.Timeout())
+	}
+}
+
+func TestTimeoutInvalid(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    timeout: banana
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid timeout")
+	}
+}
+
+func TestCircuitBreakerConfig(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    circuit_breaker:
+      failure_threshold: 10
+      cooldown: 1m
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := cfg.Upstreams()[0].CircuitBreaker()
+	if cb == nil {
+		t.Fatal("expected circuit_breaker config")
+	}
+	if cb.FailureThreshold() != 10 {
+		t.Errorf("failure_threshold = %d, want 10", cb.FailureThreshold())
+	}
+	if cb.Cooldown().Seconds() != 60 {
+		t.Errorf("cooldown = %v, want 1m", cb.Cooldown())
+	}
+}
+
+func TestCircuitBreakerDefaults(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    circuit_breaker: {}
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cb := cfg.Upstreams()[0].CircuitBreaker()
+	if cb == nil {
+		t.Fatal("expected circuit_breaker config")
+	}
+	if cb.FailureThreshold() != 5 {
+		t.Errorf("default failure_threshold = %d, want 5", cb.FailureThreshold())
+	}
+	if cb.Cooldown().Seconds() != 30 {
+		t.Errorf("default cooldown = %v, want 30s", cb.Cooldown())
+	}
+}
+
+func TestCircuitBreakerNotConfigured(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Upstreams()[0].CircuitBreaker() != nil {
+		t.Error("expected nil circuit_breaker when not configured")
+	}
+}
+
+func TestRetryConfig(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    retry:
+      max_attempts: 3
+      backoff: 200ms
+      max_backoff: 5s
+      retryable_errors:
+        - connection_error
+        - "502"
+        - "503"
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := cfg.Upstreams()[0].Retry()
+	if r == nil {
+		t.Fatal("expected retry config")
+	}
+	if r.MaxAttempts() != 3 {
+		t.Errorf("max_attempts = %d, want 3", r.MaxAttempts())
+	}
+	if r.Backoff() != 200*time.Millisecond {
+		t.Errorf("backoff = %v, want 200ms", r.Backoff())
+	}
+	if r.MaxBackoff() != 5*time.Second {
+		t.Errorf("max_backoff = %v, want 5s", r.MaxBackoff())
+	}
+	errs := r.RetryableErrors()
+	if len(errs) != 3 || errs[0] != "connection_error" || errs[1] != "502" || errs[2] != "503" {
+		t.Errorf("retryable_errors = %v, want [connection_error 502 503]", errs)
+	}
+}
+
+func TestRetryNotConfigured(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Upstreams()[0].Retry() != nil {
+		t.Error("expected nil retry when not configured")
+	}
+}
+
+func TestRetryDefaults(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    retry: {}
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := cfg.Upstreams()[0].Retry()
+	if r == nil {
+		t.Fatal("expected retry config")
+	}
+	if r.MaxAttempts() != 1 {
+		t.Errorf("default max_attempts = %d, want 1", r.MaxAttempts())
+	}
+	if r.Backoff() != 100*time.Millisecond {
+		t.Errorf("default backoff = %v, want 100ms", r.Backoff())
+	}
+	if r.MaxBackoff() != 2*time.Second {
+		t.Errorf("default max_backoff = %v, want 2s", r.MaxBackoff())
+	}
+	errs := r.RetryableErrors()
+	if len(errs) != 1 || errs[0] != "connection_error" {
+		t.Errorf("default retryable_errors = %v, want [connection_error]", errs)
+	}
+}
+
+func TestStdioUpstreamWithResilience(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: stdio-svc
+    transport: stdio
+    command: ["python", "server.py"]
+    timeout: 300s
+    circuit_breaker:
+      failure_threshold: 3
+    retry:
+      max_attempts: 2
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.Timeout() != 300*time.Second {
+		t.Errorf("timeout = %v, want 300s", u.Timeout())
+	}
+	if u.CircuitBreaker() == nil {
+		t.Fatal("expected circuit_breaker")
+	}
+	if u.Retry() == nil {
+		t.Fatal("expected retry")
 	}
 }

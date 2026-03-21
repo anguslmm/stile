@@ -18,6 +18,23 @@ import (
 
 var _ Transport = (*HTTPTransport)(nil)
 
+// ConnectError indicates a connection-level failure (TCP, DNS, TLS).
+type ConnectError struct {
+	Err error
+}
+
+func (e *ConnectError) Error() string { return e.Err.Error() }
+func (e *ConnectError) Unwrap() error { return e.Err }
+
+// StatusError indicates the upstream returned an HTTP error status.
+type StatusError struct {
+	Code int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("upstream returned status %d", e.Code)
+}
+
 // HTTPTransport implements Transport for Streamable HTTP MCP servers.
 type HTTPTransport struct {
 	url    string
@@ -32,11 +49,16 @@ type HTTPTransport struct {
 
 // NewHTTPTransport creates an HTTPTransport from the given HTTP upstream config.
 func NewHTTPTransport(cfg *config.HTTPUpstreamConfig) (*HTTPTransport, error) {
+	timeout := cfg.Timeout()
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+
 	t := &HTTPTransport{
-		url:           cfg.URL(),
+		url: cfg.URL(),
 		client: &http.Client{
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 60 * time.Second,
+				ResponseHeaderTimeout: timeout,
 			},
 		},
 		failThreshold: 3,
@@ -72,7 +94,7 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 	resp, err := t.client.Do(httpReq)
 	if err != nil {
 		t.recordFailure()
-		return nil, fmt.Errorf("transport/http: send request: %w", err)
+		return nil, &ConnectError{Err: fmt.Errorf("transport/http: send request: %w", err)}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -82,7 +104,7 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 		} else {
 			t.recordSuccess()
 		}
-		return nil, fmt.Errorf("transport/http: upstream returned status %d", resp.StatusCode)
+		return nil, &StatusError{Code: resp.StatusCode}
 	}
 
 	t.recordSuccess()

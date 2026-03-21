@@ -19,6 +19,7 @@ import (
 	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/proxy"
+	"github.com/anguslmm/stile/internal/resilience"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/server"
 	"github.com/anguslmm/stile/internal/telemetry"
@@ -79,7 +80,7 @@ func main() {
 
 	m := metrics.New()
 
-	transports, err := buildTransports(cfg)
+	transports, err := buildTransports(cfg, m)
 	if err != nil {
 		slog.Error("create transports failed", "error", err)
 		os.Exit(1)
@@ -177,9 +178,9 @@ func main() {
 	}
 }
 
-// buildTransports creates transports for all upstreams in cfg.
-// Build errors are logged and the upstream is skipped.
-func buildTransports(cfg *config.Config) (map[string]transport.Transport, error) {
+// buildTransports creates transports for all upstreams in cfg,
+// wrapping each with resilience (circuit breaker, retries) if configured.
+func buildTransports(cfg *config.Config, m *metrics.Metrics) (map[string]transport.Transport, error) {
 	transports := make(map[string]transport.Transport)
 	for _, ucfg := range cfg.Upstreams() {
 		t, err := transport.NewFromConfig(ucfg)
@@ -187,7 +188,7 @@ func buildTransports(cfg *config.Config) (map[string]transport.Transport, error)
 			slog.Warn("skip upstream", "upstream", ucfg.Name(), "error", err)
 			continue
 		}
-		transports[ucfg.Name()] = t
+		transports[ucfg.Name()] = resilience.Wrap(t, ucfg, m)
 	}
 	return transports, nil
 }

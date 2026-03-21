@@ -29,9 +29,9 @@ This document tracks the status of each implementation task. Agents should read 
 | 16 | OpenTelemetry observability (traces, metrics migration, log correlation) | [task-16.md](tasks/task-16.md) | done |
 | 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | done |
 | 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | done |
-| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | done |
 | 18.1 | Remove config hot-reload mechanism | [task-18.1.md](tasks/task-18.1.md) | done |
-| 20 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-20.md](tasks/task-20.md) | todo |
+| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | done |
+| 20 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-20.md](tasks/task-20.md) | done |
 | 21 | Trace context propagation | [task-21.md](tasks/task-21.md) | todo |
 | 22 | Rate limit response headers | [task-22.md](tasks/task-22.md) | todo |
 | 23 | Load testing and performance benchmarks | [task-23.md](tasks/task-23.md) | todo |

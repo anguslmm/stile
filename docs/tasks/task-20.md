@@ -1,6 +1,6 @@
 # Task 20: Upstream Resilience (Circuit Breakers, Per-Upstream Timeouts, Retries)
 
-**Status:** todo
+**Status:** done
 **Depends on:** 13, 15
 
 ---

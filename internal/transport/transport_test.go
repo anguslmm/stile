@@ -313,6 +313,46 @@ func TestHTTPClientTimeout(t *testing.T) {
 	}
 }
 
+func TestPerUpstreamTimeoutOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	// Config with 50ms timeout — should fail because server takes 200ms.
+	yaml := fmt.Sprintf(`
+upstreams:
+  - name: test
+    transport: streamable-http
+    url: %s
+    timeout: 50ms
+`, srv.URL)
+	cfg, err := config.LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("failed to create test config: %v", err)
+	}
+	upstream := cfg.Upstreams()[0].(*config.HTTPUpstreamConfig)
+	tr, err := NewHTTPTransport(upstream)
+	if err != nil {
+		t.Fatalf("NewHTTPTransport: %v", err)
+	}
+
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "test/method",
+		ID:      jsonrpc.IntID(1),
+	}
+
+	_, err = tr.RoundTrip(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected timeout error with 50ms timeout")
+	}
+}
+
 func TestSSEReaderOversizedLine(t *testing.T) {
 	// Create a line larger than 1 MB — should produce an error, not a panic.
 	bigLine := "data: " + strings.Repeat("x", 1<<20+100) + "\n\n"
