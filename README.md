@@ -1,5 +1,7 @@
 # Stile
 
+[![CI](https://github.com/anguslmm/stile/actions/workflows/ci.yml/badge.svg)](https://github.com/anguslmm/stile/actions/workflows/ci.yml)
+
 Stile is a reverse proxy gateway for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), written in Go. It sits between AI agents and MCP tool servers, providing authentication, routing, rate limiting, and observability as a single binary. Point your agents at Stile and it handles which tools they can see, who can call what, and how fast.
 
 ## Quick Start
