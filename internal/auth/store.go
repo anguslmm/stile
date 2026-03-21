@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anguslmm/stile/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -52,7 +54,40 @@ CREATE TABLE IF NOT EXISTS caller_roles (
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 `
 
-var _ CallerStore = (*SQLiteStore)(nil)
+// Store is the full interface for caller/key/role management.
+// Both the admin handler and CLI operate against this interface.
+type Store interface {
+	CallerStore
+	AddCaller(name string) error
+	DeleteCaller(name string) error
+	ListCallers() ([]CallerInfo, error)
+	GetCaller(name string) (*CallerDetail, error)
+	AddKey(callerName string, keyHash [32]byte, label string) error
+	ListKeys(callerName string) ([]KeyInfo, error)
+	DeleteKey(callerName string, keyID int64) error
+	RevokeKey(callerName string, label string) error
+	KeyCountForCaller(callerName string) (int, error)
+	AssignRole(callerName string, role string) error
+	UnassignRole(callerName string, role string) error
+	Close() error
+}
+
+// OpenStore creates a Store from the given database config.
+func OpenStore(cfg config.DatabaseConfig) (Store, error) {
+	switch cfg.Driver() {
+	case "sqlite", "":
+		return NewSQLiteStore(cfg.DSN())
+	case "postgres":
+		return NewPostgresStore(cfg.DSN())
+	default:
+		return nil, fmt.Errorf("auth: unsupported database driver %q", cfg.Driver())
+	}
+}
+
+var (
+	_ CallerStore = (*SQLiteStore)(nil)
+	_ Store       = (*SQLiteStore)(nil)
+)
 
 // SQLiteStore implements CallerStore backed by a SQLite database.
 type SQLiteStore struct {

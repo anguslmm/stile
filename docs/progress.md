@@ -27,7 +27,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 14 | SQLite + rate limiter hardening (busy timeout, pool, map cap) | [task-14.md](tasks/task-14.md) | done |
 | 15 | Code health + minor fixes (typed errors, dead fields, defensive checks) | [task-15.md](tasks/task-15.md) | done |
 | 16 | OpenTelemetry observability (traces, metrics migration, log correlation) | [task-16.md](tasks/task-16.md) | done |
-| 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | todo |
+| 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | done |
 | 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | todo |
 | 19 | Config reload broadcast (Postgres NOTIFY / Redis pub/sub) | [task-19.md](tasks/task-19.md) | todo |
 | 20 | Horizontal scaling documentation and stdio guidance | [task-20.md](tasks/task-20.md) | todo |

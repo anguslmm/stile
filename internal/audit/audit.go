@@ -5,7 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
+
+	"github.com/anguslmm/stile/internal/config"
 
 	_ "modernc.org/sqlite"
 )
@@ -28,8 +31,23 @@ type Store interface {
 	Close() error
 }
 
-// Compile-time interface check.
-var _ Store = (*SQLiteStore)(nil)
+// OpenStore creates a Store from the given database config.
+func OpenStore(cfg config.DatabaseConfig) (Store, error) {
+	switch cfg.Driver() {
+	case "sqlite", "":
+		return NewSQLiteStore(cfg.DSN())
+	case "postgres":
+		return NewPostgresStore(cfg.DSN())
+	default:
+		return nil, fmt.Errorf("audit: unsupported database driver %q", cfg.Driver())
+	}
+}
+
+// Compile-time interface checks.
+var (
+	_ Store = (*SQLiteStore)(nil)
+	_ Store = (*PostgresStore)(nil)
+)
 
 // SQLiteStore persists audit entries to a SQLite database.
 type SQLiteStore struct {

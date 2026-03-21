@@ -3,8 +3,11 @@ package auth
 import (
 	"crypto/sha256"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anguslmm/stile/internal/config"
 )
 
 func TestListCallers(t *testing.T) {
@@ -314,6 +317,42 @@ func TestGenerateAPIKeyPropagatesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "entropy source unavailable") {
 		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestOpenStoreSQLite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "factory.db")
+	cfg := config.NewDatabaseConfig("sqlite", dbPath)
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.AddCaller("test"); err != nil {
+		t.Fatalf("expected SQLiteStore to work via factory: %v", err)
+	}
+}
+
+func TestOpenStoreDefaultDriver(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "factory-default.db")
+	cfg := config.NewDatabaseConfig("", dbPath)
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.AddCaller("test"); err != nil {
+		t.Fatalf("expected default (sqlite) store to work: %v", err)
+	}
+}
+
+func TestOpenStoreUnknownDriver(t *testing.T) {
+	cfg := config.NewDatabaseConfig("mysql", "localhost")
+	_, err := OpenStore(cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported driver")
 	}
 }
 

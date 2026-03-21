@@ -7,7 +7,7 @@ This document traces the complete path a request follows through Stile, from an 
 Config is loaded, then these are built in order:
 - **Transports** — one per upstream (`streamable-http` or `stdio`), keyed by name
 - **RouteTable** — takes the transports, calls `tools/list` on each upstream to discover what tools they offer, builds a `tool name -> upstream` map
-- **Authenticator** — backed by a SQLite caller store + role config
+- **Authenticator** — backed by a caller store (SQLite or Postgres) + role config
 - **RateLimiter** — token buckets from config (per-caller, per-tool, per-upstream)
 - **proxy.Handler** — holds the RouteTable and RateLimiter
 - **server.Server** — wires the HTTP mux, wraps the MCP endpoint with auth if configured
@@ -23,7 +23,7 @@ If auth is configured, the closure fires:
 - Call `a.Authenticate(r)` which:
   - Extracts the `Bearer` token from the `Authorization` header
   - SHA-256 hashes it
-  - Looks up the hash in the SQLite store -> gets the caller name
+  - Looks up the hash in the database store -> gets the caller name
   - Resolves the caller's roles, computes their allowed tool globs
   - Returns a `*Caller`
 - If auth fails -> writes a JSON-RPC error (`-32000 unauthorized`), request stops here
@@ -71,7 +71,7 @@ Any bucket empty -> error response with which level was hit.
 - JSON results get marshaled and written
 - Stream results get piped through with flush-per-chunk until EOF or client disconnect
 
-**g. Audit/metrics** — throughout step 6, the proxy records the caller, tool, upstream, status, and latency to structured logs, Prometheus counters/histograms, and the SQLite audit log.
+**g. Audit/metrics** — throughout step 6, the proxy records the caller, tool, upstream, status, and latency to structured logs, Prometheus counters/histograms, and the audit log database.
 
 ## 7. Distributed tracing
 
@@ -106,7 +106,7 @@ POST /mcp
   |
   v
 Auth closure ---- s.authenticator (swappable via mutex/atomic)
-  |                 |-- Authenticate: Bearer token -> SHA-256 -> SQLite lookup -> Caller
+  |                 |-- Authenticate: Bearer token -> SHA-256 -> database lookup -> Caller
   |                 |-- Caller set in context
   v
 handleMCP -------- Parse JSON-RPC body

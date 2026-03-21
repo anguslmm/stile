@@ -100,7 +100,7 @@ func main() {
 
 	var auditStore audit.Store
 	if cfg.Audit().Enabled() {
-		auditStore, err = audit.NewSQLiteStore(cfg.Audit().Database())
+		auditStore, err = audit.OpenStore(cfg.Audit().DatabaseConfig())
 		if err != nil {
 			slog.Error("open audit database failed", "error", err)
 			os.Exit(1)
@@ -178,9 +178,9 @@ func main() {
 
 		// Update authenticator if auth is configured.
 		if opts != nil && opts.Authenticator != nil {
-			dbPath := newCfg.Server().DBPath()
-			if dbPath != "" {
-				store, err := auth.NewSQLiteStore(dbPath)
+			dbCfg := newCfg.Server().Database()
+			if dbCfg.Driver() != "" || dbCfg.DSN() != "" {
+				store, err := auth.OpenStore(dbCfg)
 				if err != nil {
 					slog.Error("reload: failed to open caller database", "error", err)
 				} else {
@@ -352,13 +352,13 @@ func setupLogger(cfg *config.Config) {
 	slog.SetDefault(slog.New(handler))
 }
 
-func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, *auth.SQLiteStore) {
-	dbPath := cfg.Server().DBPath()
-	if dbPath == "" {
+func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Store) {
+	dbCfg := cfg.Server().Database()
+	if dbCfg.Driver() == "" && dbCfg.DSN() == "" {
 		return nil, nil
 	}
 
-	store, err := auth.NewSQLiteStore(dbPath)
+	store, err := auth.OpenStore(dbCfg)
 	if err != nil {
 		slog.Error("open caller database failed", "error", err)
 		os.Exit(1)

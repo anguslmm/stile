@@ -16,13 +16,13 @@ import (
 
 // Handler serves admin API endpoints for caller and key management.
 type Handler struct {
-	store      *auth.SQLiteStore
+	store      auth.Store
 	router     *router.RouteTable
 	reloadFunc server.ReloadFunc
 }
 
 // NewHandler creates an admin handler.
-func NewHandler(store *auth.SQLiteStore, rt *router.RouteTable, reload server.ReloadFunc) *Handler {
+func NewHandler(store auth.Store, rt *router.RouteTable, reload server.ReloadFunc) *Handler {
 	return &Handler{store: store, router: rt, reloadFunc: reload}
 }
 

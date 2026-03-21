@@ -1,5 +1,6 @@
 # Full example: GitHub + Filesystem + Fetch (stdio) + mock SSE server (HTTP).
 # Uses Dockerfile.example which includes Node.js, Python, and the mock SSE server.
+# Postgres for caller store + audit log.
 #
 # Usage:
 #   export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
@@ -8,6 +9,20 @@
 #
 # Jaeger UI: http://localhost:16686
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: stile
+      POSTGRES_USER: stile
+      POSTGRES_PASSWORD: stile
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stile"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
   stile:
     build:
       context: .
@@ -16,13 +31,15 @@ services:
       - "8080:8080"
     volumes:
       - ./configs/example.yaml:/etc/stile/config.yaml:ro
-      - stile-data:/data/stile          # caller DB + audit log
       - ${WORKSPACE_PATH:-.}:/workspace  # directory the filesystem server can access
     environment:
       - GITHUB_PERSONAL_ACCESS_TOKEN     # required for github MCP server
       - ADMIN_API_KEY                    # protects /admin/ endpoints
     depends_on:
-      - jaeger
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -31,4 +48,4 @@ services:
       - "4318:4318"     # OTLP HTTP receiver
 
 volumes:
-  stile-data:
+  pgdata:

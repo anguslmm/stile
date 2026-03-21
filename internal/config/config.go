@@ -164,6 +164,7 @@ type loggingConfig struct {
 type auditConfig struct {
 	enabled  bool
 	database string
+	driver   string
 }
 
 type telemetryConfig struct {
@@ -204,6 +205,7 @@ func (c *Config) Server() ServerConfig {
 		address:         c.server.address,
 		toolCacheTTL:    c.server.toolCacheTTL,
 		dbPath:          c.server.dbPath,
+		database:        c.server.database,
 		shutdownTimeout: c.server.shutdownTimeout,
 	}
 }
@@ -229,7 +231,7 @@ func (c *Config) Logging() LoggingConfig {
 
 // Audit returns the audit configuration.
 func (c *Config) Audit() AuditConfig {
-	return AuditConfig{enabled: c.audit.enabled, database: c.audit.database}
+	return AuditConfig{enabled: c.audit.enabled, database: c.audit.database, driver: c.audit.driver}
 }
 
 // Telemetry returns the telemetry configuration.
@@ -257,6 +259,7 @@ type ServerConfig struct {
 	address         string
 	toolCacheTTL    time.Duration
 	dbPath          string
+	database        DatabaseConfig
 	shutdownTimeout time.Duration
 }
 
@@ -268,10 +271,31 @@ func (s ServerConfig) Address() string { return s.address }
 func (s ServerConfig) ToolCacheTTL() time.Duration { return s.toolCacheTTL }
 
 // DBPath returns the path to the SQLite database for caller storage.
+// Deprecated: use Database() instead.
 func (s ServerConfig) DBPath() string { return s.dbPath }
+
+// Database returns the database configuration.
+func (s ServerConfig) Database() DatabaseConfig { return s.database }
 
 // ShutdownTimeout returns the graceful shutdown timeout. Default: 30s.
 func (s ServerConfig) ShutdownTimeout() time.Duration { return s.shutdownTimeout }
+
+// DatabaseConfig provides read-only access to database settings.
+type DatabaseConfig struct {
+	driver string
+	dsn    string
+}
+
+// Driver returns the database driver ("sqlite" or "postgres"). Empty means no database configured.
+func (d DatabaseConfig) Driver() string { return d.driver }
+
+// DSN returns the data source name (file path for sqlite, connection string for postgres).
+func (d DatabaseConfig) DSN() string { return d.dsn }
+
+// NewDatabaseConfig creates a DatabaseConfig with the given driver and DSN.
+func NewDatabaseConfig(driver, dsn string) DatabaseConfig {
+	return DatabaseConfig{driver: driver, dsn: dsn}
+}
 
 // LoggingConfig provides read-only access to logging settings.
 type LoggingConfig struct {
@@ -289,13 +313,23 @@ func (l LoggingConfig) Format() string { return l.format }
 type AuditConfig struct {
 	enabled  bool
 	database string
+	driver   string
 }
 
 // Enabled returns whether audit logging is enabled.
 func (a AuditConfig) Enabled() bool { return a.enabled }
 
-// Database returns the path to the audit SQLite database.
+// Database returns the audit database DSN string.
 func (a AuditConfig) Database() string { return a.database }
+
+// DatabaseConfig returns a DatabaseConfig derived from the audit settings.
+func (a AuditConfig) DatabaseConfig() DatabaseConfig {
+	driver := a.driver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	return DatabaseConfig{driver: driver, dsn: a.database}
+}
 
 // TelemetryConfig provides read-only access to telemetry settings.
 type TelemetryConfig struct {
@@ -325,6 +359,7 @@ type serverConfig struct {
 	address         string
 	toolCacheTTL    time.Duration
 	dbPath          string
+	database        DatabaseConfig
 	shutdownTimeout time.Duration
 }
 
@@ -395,6 +430,7 @@ type rawLoggingConfig struct {
 type rawAuditConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Database string `yaml:"database"`
+	Driver   string `yaml:"driver"`
 }
 
 type rawTelemetryConfig struct {
@@ -421,11 +457,17 @@ type rawConfig struct {
 	rolesOrdered []string
 }
 
+type rawDatabaseConfig struct {
+	Driver string `yaml:"driver"`
+	DSN    string `yaml:"dsn"`
+}
+
 type rawServerConfig struct {
-	Address         string `yaml:"address"`
-	ToolCacheTTL    string `yaml:"tool_cache_ttl"`
-	DBPath          string `yaml:"db_path"`
-	ShutdownTimeout string `yaml:"shutdown_timeout"`
+	Address         string             `yaml:"address"`
+	ToolCacheTTL    string             `yaml:"tool_cache_ttl"`
+	DBPath          string             `yaml:"db_path"`
+	Database        *rawDatabaseConfig `yaml:"database"`
+	ShutdownTimeout string             `yaml:"shutdown_timeout"`
 }
 
 type rawUpstreamConfig struct {
@@ -504,6 +546,23 @@ func convert(raw rawConfig) (*Config, error) {
 			address: raw.Server.Address,
 			dbPath:  raw.Server.DBPath,
 		},
+	}
+
+	// Resolve database config: explicit database section takes precedence,
+	// otherwise fall back to db_path for backwards compatibility.
+	if raw.Server.Database != nil {
+		cfg.server.database = DatabaseConfig{
+			driver: raw.Server.Database.Driver,
+			dsn:    raw.Server.Database.DSN,
+		}
+		if cfg.server.database.driver == "" {
+			cfg.server.database.driver = "sqlite"
+		}
+	} else if raw.Server.DBPath != "" {
+		cfg.server.database = DatabaseConfig{
+			driver: "sqlite",
+			dsn:    raw.Server.DBPath,
+		}
 	}
 	if cfg.server.address == "" {
 		cfg.server.address = ":8080"
@@ -629,6 +688,7 @@ func convert(raw rawConfig) (*Config, error) {
 	if raw.Audit != nil {
 		cfg.audit.enabled = raw.Audit.Enabled
 		cfg.audit.database = raw.Audit.Database
+		cfg.audit.driver = raw.Audit.Driver
 	}
 
 	// Parse global rate limit defaults.
@@ -701,6 +761,20 @@ func validate(raw rawConfig) error {
 		}
 	}
 
+	if raw.Server.Database != nil {
+		switch raw.Server.Database.Driver {
+		case "", "sqlite", "postgres":
+		default:
+			return fmt.Errorf("config: server.database.driver must be \"sqlite\" or \"postgres\", got %q", raw.Server.Database.Driver)
+		}
+		if raw.Server.Database.DSN == "" {
+			return fmt.Errorf("config: server.database.dsn is required when database is configured")
+		}
+		if raw.Server.DBPath != "" {
+			return fmt.Errorf("config: cannot set both db_path and database")
+		}
+	}
+
 	if raw.Logging != nil {
 		switch raw.Logging.Level {
 		case "", "debug", "info", "warn", "error":
@@ -714,8 +788,15 @@ func validate(raw rawConfig) error {
 		}
 	}
 
-	if raw.Audit != nil && raw.Audit.Enabled && raw.Audit.Database == "" {
-		return fmt.Errorf("config: audit.database is required when audit is enabled")
+	if raw.Audit != nil && raw.Audit.Enabled {
+		if raw.Audit.Database == "" {
+			return fmt.Errorf("config: audit.database is required when audit is enabled")
+		}
+		switch raw.Audit.Driver {
+		case "", "sqlite", "postgres":
+		default:
+			return fmt.Errorf("config: audit.driver must be \"sqlite\" or \"postgres\", got %q", raw.Audit.Driver)
+		}
 	}
 
 	if raw.Telemetry != nil && raw.Telemetry.Traces != nil {

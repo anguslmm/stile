@@ -12,30 +12,42 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 )
 
-func openStore(fs *flag.FlagSet, dbFlag, configFlag *string) (*auth.SQLiteStore, error) {
-	// 1. Explicit --db flag.
-	if *dbFlag != "" {
-		return auth.NewSQLiteStore(*dbFlag)
+func openStore(fs *flag.FlagSet, dbFlag, driverFlag, configFlag *string) (auth.Store, error) {
+	driver := "sqlite"
+	if *driverFlag != "" {
+		driver = *driverFlag
 	}
-	// 2. --config flag → load config → server.db_path.
+
+	// 1. Explicit --dsn (or --db) flag.
+	if *dbFlag != "" {
+		return auth.OpenStore(config.NewDatabaseConfig(driver, *dbFlag))
+	}
+	// 2. --config flag → load config → server.database.
 	if *configFlag != "" {
 		cfg, err := config.Load(*configFlag)
 		if err != nil {
 			return nil, fmt.Errorf("load config: %w", err)
 		}
-		if p := cfg.Server().DBPath(); p != "" {
-			return auth.NewSQLiteStore(p)
+		dbCfg := cfg.Server().Database()
+		if dbCfg.DSN() != "" {
+			return auth.OpenStore(dbCfg)
 		}
 	}
 	// 3. Default.
-	return auth.NewSQLiteStore("stile.db")
+	return auth.OpenStore(config.NewDatabaseConfig(driver, "stile.db"))
+}
+
+func addCLIFlags(fs *flag.FlagSet) (db, driver, cfg *string) {
+	db = fs.String("db", "", "database DSN (file path for sqlite, connection string for postgres)")
+	driver = fs.String("driver", "", "database driver: sqlite (default) or postgres")
+	cfg = fs.String("config", "", "path to config file")
+	return db, driver, cfg
 }
 
 func runAddCaller(args []string) {
 	fs := flag.NewFlagSet("add-caller", flag.ExitOnError)
 	name := fs.String("name", "", "unique caller name (required)")
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *name == "" {
@@ -43,7 +55,7 @@ func runAddCaller(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -61,8 +73,7 @@ func runAddKey(args []string) {
 	fs := flag.NewFlagSet("add-key", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	label := fs.String("label", "", "human-readable label for the key")
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" {
@@ -70,7 +81,7 @@ func runAddKey(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -97,8 +108,7 @@ func runAssignRole(args []string) {
 	fs := flag.NewFlagSet("assign-role", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	role := fs.String("role", "", "role to assign (required)")
-	db := fs.String("db", "", "path to SQLite database")
-	cfgPath := fs.String("config", "", "path to config file (validates role exists)")
+	db, driver, cfgPath := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" || *role == "" {
@@ -125,7 +135,7 @@ func runAssignRole(args []string) {
 		}
 	}
 
-	store, err := openStore(fs, db, cfgPath)
+	store, err := openStore(fs, db, driver, cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -143,8 +153,7 @@ func runUnassignRole(args []string) {
 	fs := flag.NewFlagSet("unassign-role", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	role := fs.String("role", "", "role to unassign (required)")
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" || *role == "" {
@@ -152,7 +161,7 @@ func runUnassignRole(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -168,11 +177,10 @@ func runUnassignRole(args []string) {
 
 func runListCallers(args []string) {
 	fs := flag.NewFlagSet("list-callers", flag.ExitOnError)
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -203,8 +211,7 @@ func runRemoveCaller(args []string) {
 	fs := flag.NewFlagSet("remove-caller", flag.ExitOnError)
 	name := fs.String("name", "", "caller name to remove (required)")
 	force := fs.Bool("force", false, "force removal even if caller has active keys")
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *name == "" {
@@ -212,7 +219,7 @@ func runRemoveCaller(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -242,8 +249,7 @@ func runRevokeKey(args []string) {
 	fs := flag.NewFlagSet("revoke-key", flag.ExitOnError)
 	caller := fs.String("caller", "", "caller who owns the key (required)")
 	label := fs.String("label", "", "label of the key to revoke")
-	db := fs.String("db", "", "path to SQLite database")
-	cfg := fs.String("config", "", "path to config file")
+	db, driver, cfg := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" {
@@ -251,7 +257,7 @@ func runRevokeKey(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, cfg)
+	store, err := openStore(fs, db, driver, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

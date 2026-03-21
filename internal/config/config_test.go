@@ -474,6 +474,111 @@ upstreams:
 	if cfg.Server().DBPath() != "/data/stile.db" {
 		t.Errorf("db_path = %q, want /data/stile.db", cfg.Server().DBPath())
 	}
+	// Backwards compat: db_path should populate Database() as sqlite.
+	if cfg.Server().Database().Driver() != "sqlite" {
+		t.Errorf("database.driver = %q, want sqlite", cfg.Server().Database().Driver())
+	}
+	if cfg.Server().Database().DSN() != "/data/stile.db" {
+		t.Errorf("database.dsn = %q, want /data/stile.db", cfg.Server().Database().DSN())
+	}
+}
+
+func TestDatabaseConfigExplicit(t *testing.T) {
+	yaml := `
+server:
+  database:
+    driver: postgres
+    dsn: "postgres://localhost/stile"
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().Database().Driver() != "postgres" {
+		t.Errorf("database.driver = %q, want postgres", cfg.Server().Database().Driver())
+	}
+	if cfg.Server().Database().DSN() != "postgres://localhost/stile" {
+		t.Errorf("database.dsn = %q, want postgres://localhost/stile", cfg.Server().Database().DSN())
+	}
+}
+
+func TestDatabaseConfigDefaultDriver(t *testing.T) {
+	yaml := `
+server:
+  database:
+    dsn: stile.db
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().Database().Driver() != "sqlite" {
+		t.Errorf("database.driver = %q, want sqlite (default)", cfg.Server().Database().Driver())
+	}
+}
+
+func TestDatabaseConfigRejectsUnknownDriver(t *testing.T) {
+	yaml := `
+server:
+  database:
+    driver: mysql
+    dsn: "root@tcp(localhost)/stile"
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for unknown database driver")
+	}
+}
+
+func TestDatabaseConfigRejectsBothDBPathAndDatabase(t *testing.T) {
+	yaml := `
+server:
+  db_path: stile.db
+  database:
+    driver: sqlite
+    dsn: stile.db
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when both db_path and database are set")
+	}
+}
+
+func TestDatabaseConfigRequiresDSN(t *testing.T) {
+	yaml := `
+server:
+  database:
+    driver: postgres
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when database.dsn is empty")
+	}
 }
 
 func TestLoggingConfigDefaults(t *testing.T) {
