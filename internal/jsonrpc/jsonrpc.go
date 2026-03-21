@@ -23,22 +23,28 @@ const (
 // The interface is sealed by the unexported marker method.
 type ID interface {
 	jsonrpcID() // sealed — only types in this package can implement ID
+	// Value returns the underlying Go value: string for StringID,
+	// int64 for IntID, nil for NullID.
+	Value() any
 }
 
 // StringID is a string-valued JSON-RPC ID.
 type StringID string
 
-func (StringID) jsonrpcID() {}
+func (StringID) jsonrpcID()    {}
+func (s StringID) Value() any { return string(s) }
 
 // IntID is an integer-valued JSON-RPC ID.
 type IntID int64
 
-func (IntID) jsonrpcID() {}
+func (IntID) jsonrpcID()    {}
+func (i IntID) Value() any { return int64(i) }
 
 // NullID is a JSON-RPC ID that is explicitly null.
 type NullID struct{}
 
-func (NullID) jsonrpcID() {}
+func (NullID) jsonrpcID()  {}
+func (NullID) Value() any { return nil }
 
 // Compile-time interface satisfaction checks.
 var (
@@ -142,16 +148,10 @@ func (r *Response) UnmarshalJSON(data []byte) error {
 
 // marshalID converts an ID to a value suitable for json.Marshal.
 func marshalID(id ID) any {
-	switch v := id.(type) {
-	case StringID:
-		return string(v)
-	case IntID:
-		return int64(v)
-	case NullID:
-		return nil
-	default:
+	if id == nil {
 		return nil
 	}
+	return id.Value()
 }
 
 // Error represents a JSON-RPC 2.0 error object.

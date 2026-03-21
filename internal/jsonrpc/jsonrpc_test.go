@@ -218,6 +218,26 @@ func TestIDEdgeCases(t *testing.T) {
 	}
 }
 
+func TestIDValue(t *testing.T) {
+	tests := []struct {
+		name string
+		id   ID
+		want any
+	}{
+		{"string", StringID("abc"), "abc"},
+		{"integer", IntID(42), int64(42)},
+		{"null", NullID{}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.id.Value()
+			if got != tt.want {
+				t.Errorf("Value() = %v (%T), want %v (%T)", got, got, tt.want, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidationEmptyMethod(t *testing.T) {
 	data := []byte(`{"jsonrpc":"2.0","method":"","id":1}`)
 	_, _, err := ParseMessage(data)
