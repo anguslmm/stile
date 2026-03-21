@@ -1,0 +1,10 @@
+services:
+  stile:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/config.yaml:/etc/stile/config.yaml:ro
+    environment:
+      - REMOTE_TOOLS_TOKEN
+      - ADMIN_API_KEY

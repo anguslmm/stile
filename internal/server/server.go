@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -167,8 +168,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	requests, isBatch, err := jsonrpc.ParseMessage(body)
 	if err != nil {
+		slog.Warn("mcp parse error", "error", err, "body_prefix", truncate(string(body), 200))
 		writeError(w, nil, jsonrpc.CodeParseError, err.Error())
 		return
+	}
+
+	for _, req := range requests {
+		slog.Info("mcp request", "method", req.Method, "id", req.ID)
 	}
 
 	if !isBatch && len(requests) == 1 {
@@ -232,7 +238,7 @@ func (s *Server) handleSingle(w http.ResponseWriter, r *http.Request, req *jsonr
 func (s *Server) dispatch(ctx context.Context, req *jsonrpc.Request) *jsonrpc.Response {
 	switch req.Method {
 	case "initialize":
-		return s.handleInitialize(req)
+		return s.handleInitialize(ctx, req)
 	case "ping":
 		return s.handlePing(req)
 	case "tools/list":
@@ -251,7 +257,7 @@ func (s *Server) dispatchNotification(req *jsonrpc.Request) {
 	// All other notifications: silently ignore.
 }
 
-func (s *Server) handleInitialize(req *jsonrpc.Request) *jsonrpc.Response {
+func (s *Server) handleInitialize(ctx context.Context, req *jsonrpc.Request) *jsonrpc.Response {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
@@ -264,10 +270,18 @@ func (s *Server) handleInitialize(req *jsonrpc.Request) *jsonrpc.Response {
 			"unsupported protocol version: "+params.ProtocolVersion)
 	}
 
+	// Include the tool list in capabilities so clients don't need a separate tools/list call.
+	tools := s.proxy.FilteredTools(ctx)
+
 	result := map[string]any{
 		"protocolVersion": supportedProtocolVersion,
-		"capabilities":    map[string]any{"tools": map[string]any{}},
-		"serverInfo":      map[string]any{"name": "stile", "version": "0.1.0"},
+		"capabilities": map[string]any{
+			"tools": map[string]any{
+				"listChanged": true,
+			},
+		},
+		"serverInfo": map[string]any{"name": "stile", "version": "0.1.0"},
+		"tools":      tools,
 	}
 	resp, err := jsonrpc.NewResponse(req.ID, result)
 	if err != nil {
@@ -325,4 +339,11 @@ func writeError(w http.ResponseWriter, id jsonrpc.ID, code int, message string) 
 	data, _ := json.Marshal(resp)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

@@ -21,7 +21,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 9.1 | Cleanup — main.go and wiring layer | [task-09.1.md](tasks/task-09.1.md) | done |
 | 10 | Admin API for caller management | [task-10.md](tasks/task-10.md) | done |
 | 10.1 | Admin API — role management endpoints | [task-10.1.md](tasks/task-10.1.md) | done |
-| 11 | Integration tests + release packaging | [task-11.md](tasks/task-11.md) | not started |
+| 11 | Integration tests + release packaging | [task-11.md](tasks/task-11.md) | done |
 
 ## Notes
 

@@ -67,6 +67,23 @@ func (h *Handler) HandleToolsList(ctx context.Context, id jsonrpc.ID) (*jsonrpc.
 	return jsonrpc.NewResponse(id, result)
 }
 
+// FilteredTools returns the tool list filtered by the caller in context.
+func (h *Handler) FilteredTools(ctx context.Context) []transport.ToolSchema {
+	tools := h.router.ListTools()
+
+	caller := auth.CallerFromContext(ctx)
+	if caller != nil {
+		filtered := make([]transport.ToolSchema, 0, len(tools))
+		for _, t := range tools {
+			if caller.CanAccessTool(t.Name) {
+				filtered = append(filtered, t)
+			}
+		}
+		return filtered
+	}
+	return tools
+}
+
 // HandleToolsCall dispatches a tools/call request to the correct upstream.
 // It writes the response directly to the http.ResponseWriter to support SSE passthrough.
 func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, req *jsonrpc.Request) {

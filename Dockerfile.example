@@ -1,0 +1,43 @@
+# Example Dockerfile with stdio MCP servers (GitHub, Filesystem, Fetch)
+# and a mock SSE server for testing HTTP transport + SSE passthrough.
+#
+# Usage: docker compose -f docker-compose.example.yml up --build
+#
+# Requires: GITHUB_PERSONAL_ACCESS_TOKEN and ADMIN_API_KEY env vars.
+# See configs/real.yaml for the matching config.
+
+# Build stage
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /stile ./cmd/gateway/
+RUN CGO_ENABLED=0 go build -o /mock-sse-server ./scripts/mock-sse-server.go
+
+# Runtime stage — Node.js + Python needed for stdio MCP servers
+FROM node:22-slim
+
+# Install Python for mcp-server-fetch + supervisord-like shell support
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-install Node MCP servers globally
+RUN npm install -g \
+    @modelcontextprotocol/server-github \
+    @modelcontextprotocol/server-filesystem
+
+# Pre-install Python MCP server (fetch)
+RUN python3 -m venv /opt/mcp-fetch && /opt/mcp-fetch/bin/pip install mcp-server-fetch
+ENV PATH="/opt/mcp-fetch/bin:$PATH"
+
+COPY --from=build /stile /usr/local/bin/stile
+COPY --from=build /mock-sse-server /usr/local/bin/mock-sse-server
+
+# Workspace directory for filesystem server access
+RUN mkdir -p /workspace /data/stile
+VOLUME ["/workspace", "/data/stile"]
+
+# Start mock SSE server in background, then run Stile
+ENTRYPOINT ["sh", "-c", "mock-sse-server & exec stile \"$@\"", "--"]
+CMD ["-config", "/etc/stile/config.yaml"]

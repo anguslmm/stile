@@ -1,6 +1,6 @@
 # Task 11: Integration Tests + Release Packaging
 
-**Status:** not started
+**Status:** done
 **Depends on:** All previous tasks
 **Needed by:** nothing — this is the final task
 

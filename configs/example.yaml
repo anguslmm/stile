@@ -1,20 +1,95 @@
 server:
   address: ":8080"
+  db_path: /data/stile/callers.db
+  tool_cache_ttl: "5m"
+  shutdown_timeout: "30s"
 
 upstreams:
-  - name: remote-tools
-    transport: streamable-http
-    url: https://mcp.example.com/v1
-    auth:
-      type: bearer
-      token_env: REMOTE_TOOLS_TOKEN
-    tools:
-      - search
-      - summarize
-
-  - name: local-tools
+  # GitHub MCP server (stdio)
+  # Tools: create_or_update_file, search_repositories, create_repository,
+  #   get_file_contents, push_files, create_issue, create_pull_request,
+  #   fork_repository, create_branch, list_commits, list_issues, update_issue,
+  #   add_issue_comment, search_code, search_issues, search_users, get_issue,
+  #   get_pull_request, list_pull_requests, create_pull_request_review,
+  #   merge_pull_request, get_pull_request_files, get_pull_request_status,
+  #   update_pull_request_branch, get_pull_request_comments, get_pull_request_reviews
+  # Requires: GITHUB_PERSONAL_ACCESS_TOKEN
+  - name: github
     transport: stdio
-    command: ["python", "-m", "mcp_server", "--stdio"]
-    tools:
-      - calculator
-      - file_reader
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+
+  # Filesystem MCP server (stdio)
+  # Tools: read_text_file, read_media_file, read_multiple_files, write_file,
+  #   edit_file, create_directory, list_directory, list_directory_with_sizes,
+  #   move_file, search_files, directory_tree, get_file_info, list_allowed_directories
+  # Allowed directory: /workspace (mounted via docker-compose)
+  - name: filesystem
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+  # Fetch MCP server (stdio, Python)
+  # Tools: fetch
+  - name: fetch
+    transport: stdio
+    command: ["mcp-server-fetch"]
+
+  # Mock SSE server (streamable HTTP) — streams lorem ipsum via SSE
+  # Tools: lorem_stream
+  - name: mock-sse
+    transport: streamable-http
+    url: http://localhost:9090
+
+roles:
+  # Full access to all tools across all upstreams
+  admin:
+    allowed_tools: ["*"]
+    rate_limit: "1000/min"
+    tool_rate_limit: "100/sec"
+
+  # Read-only: can browse, search, read, and fetch — no writes or mutations
+  reader:
+    allowed_tools:
+      - "get_*"                    # get_file_contents, get_issue, get_pull_request, get_file_info, etc.
+      - "list_*"                   # list_commits, list_issues, list_pull_requests, list_directory, etc.
+      - "search_*"                 # search_repositories, search_code, search_issues, search_users, search_files
+      - "read_*"                   # read_text_file, read_media_file, read_multiple_files
+      - "directory_tree"           # filesystem tree view
+      - "fetch"                    # web fetching
+    rate_limit: "200/min"
+    tool_rate_limit: "20/sec"
+
+  # Developer: full GitHub + fetch + read-only filesystem (no file writes)
+  developer:
+    allowed_tools:
+      # All GitHub tools
+      - "create_*"                 # create_issue, create_pull_request, create_branch, create_repository, etc.
+      - "update_*"                 # update_issue, update_pull_request_branch
+      - "merge_*"                  # merge_pull_request
+      - "fork_*"                   # fork_repository
+      - "push_*"                   # push_files
+      - "add_*"                    # add_issue_comment
+      - "create_or_update_file"    # GitHub file creation
+      - "create_pull_request_review"
+      # Read operations (GitHub + filesystem)
+      - "get_*"
+      - "list_*"
+      - "search_*"
+      - "read_*"
+      - "directory_tree"
+      # Web fetching
+      - "fetch"
+    rate_limit: "500/min"
+    tool_rate_limit: "50/sec"
+
+rate_limits:
+  default_caller: "60/min"
+  default_tool: "10/sec"
+  default_upstream: "500/min"
+
+logging:
+  level: "info"
+  format: "json"
+
+audit:
+  enabled: true
+  database: /data/stile/audit.db

@@ -1,0 +1,20 @@
+server:
+  address: ":8080"
+
+upstreams:
+  - name: remote-tools
+    transport: streamable-http
+    url: https://mcp.example.com/v1
+    auth:
+      type: bearer
+      token_env: REMOTE_TOOLS_TOKEN
+    tools:
+      - search
+      - summarize
+
+  - name: local-tools
+    transport: stdio
+    command: ["python", "-m", "mcp_server", "--stdio"]
+    tools:
+      - calculator
+      - file_reader

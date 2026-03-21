@@ -304,6 +304,21 @@ func (rt *RouteTable) Close() {
 }
 
 func discoverTools(ctx context.Context, t transport.Transport) ([]transport.ToolSchema, error) {
+	// MCP spec requires initialize before any other method.
+	// Some servers (e.g. mcp-server-fetch) enforce this strictly.
+	initReq := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "initialize",
+		ID:      jsonrpc.IntID(0),
+		Params:  json.RawMessage(`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"stile","version":"0.1.0"}}`),
+	}
+	initResp, err := transport.Send(ctx, t, initReq)
+	if err != nil {
+		slog.Debug("initialize failed (non-fatal)", "error", err)
+	} else if initResp.Error != nil {
+		slog.Debug("initialize returned error (non-fatal)", "error", initResp.Error.Message)
+	}
+
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/list",

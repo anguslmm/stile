@@ -1,0 +1,24 @@
+# Full example: GitHub + Filesystem + Fetch (stdio) + mock SSE server (HTTP).
+# Uses Dockerfile.example which includes Node.js, Python, and the mock SSE server.
+#
+# Usage:
+#   export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
+#   export ADMIN_API_KEY="pick-a-secret"
+#   docker compose -f docker-compose.example.yml up --build
+services:
+  stile:
+    build:
+      context: .
+      dockerfile: Dockerfile.example
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/example.yaml:/etc/stile/config.yaml:ro
+      - stile-data:/data/stile          # caller DB + audit log
+      - ${WORKSPACE_PATH:-.}:/workspace  # directory the filesystem server can access
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN     # required for github MCP server
+      - ADMIN_API_KEY                    # protects /admin/ endpoints
+
+volumes:
+  stile-data:

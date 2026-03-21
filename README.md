@@ -1,97 +1,300 @@
 # Stile
 
-A reverse proxy gateway for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), written in Go. Stile sits between AI agents and MCP tool servers, providing a single endpoint that routes tool calls to the correct upstream.
-
-## Status
-
-Stile is under active development. The core proxy pipeline works — you can point an MCP client at Stile and use tools from upstream HTTP servers through it.
-
-**What works today:**
-
-- JSON-RPC 2.0 codec (single and batch requests)
-- YAML config loading
-- HTTP transport client (Streamable HTTP + SSE passthrough)
-- Inbound MCP server (`POST /mcp`) handling initialize, ping, tools/list, tools/call
-- Proxy handler with tool discovery and upstream routing
-
-**Not yet implemented:** stdio transport, glob-based routing, auth, rate limiting, ACLs, observability, health endpoints, graceful shutdown.
+Stile is a reverse proxy gateway for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), written in Go. It sits between AI agents and MCP tool servers, providing authentication, routing, rate limiting, and observability as a single binary. Point your agents at Stile and it handles which tools they can see, who can call what, and how fast.
 
 ## Quick Start
 
-```bash
-go build ./...
-```
-
-### Testing with the fake upstream
-
-A fake MCP upstream server is included for local testing.
-
-**Terminal 1 — start the fake upstream:**
+**Build:**
 
 ```bash
-go run ./scripts/fake-upstream.go
-# Listens on :9090, serves "echo" and "add" tools
+go build -o stile ./cmd/gateway/
 ```
 
-**Terminal 2 — start Stile:**
+**Create a config** (`config.yaml`):
+
+```yaml
+server:
+  address: ":8080"
+
+upstreams:
+  - name: my-tools
+    transport: streamable-http
+    url: https://mcp.example.com/v1
+    auth:
+      type: bearer
+      token_env: MCP_TOKEN
+```
+
+**Run:**
 
 ```bash
-go run ./cmd/gateway/ -config configs/test-local.yaml
-# Listens on :8080, proxies to the fake upstream
+export MCP_TOKEN="your-upstream-token"
+./stile -config config.yaml
 ```
 
-**Terminal 3 — send requests:**
+**Point your agent at it:**
 
-```bash
-# Initialize handshake
-curl -s -X POST http://localhost:8080/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | jq .
+Configure your MCP client to connect to `http://localhost:8080/mcp`. Stile proxies `initialize`, `tools/list`, and `tools/call` requests to the configured upstreams.
 
-# List available tools
-curl -s -X POST http://localhost:8080/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}' | jq .
-
-# Call the echo tool
-curl -s -X POST http://localhost:8080/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}},"id":3}' | jq .
-
-# Call the add tool
-curl -s -X POST http://localhost:8080/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"add","arguments":{"a":17,"b":25}},"id":4}' | jq .
-```
-
-### Using with Claude Code
-
-You can also connect Claude Code to Stile as an MCP server:
+**Using with Claude Code:**
 
 ```bash
 claude mcp add --transport http stile http://localhost:8080/mcp
 ```
 
-After restarting Claude Code, the tools from upstream servers will be available as MCP tools.
+## Configuration Reference
+
+### Server
+
+```yaml
+server:
+  address: ":8080"           # Listen address (default: ":8080")
+  tool_cache_ttl: "5m"       # How often to re-discover tools from upstreams (default: "5m")
+  db_path: "stile.db"        # SQLite database for caller/key storage (enables auth)
+  shutdown_timeout: "30s"    # Graceful shutdown timeout (default: "30s")
+```
+
+### Upstreams
+
+Each upstream is an MCP server that Stile proxies to.
+
+```yaml
+upstreams:
+  - name: remote-tools                  # Unique name
+    transport: streamable-http          # "streamable-http" or "stdio"
+    url: https://mcp.example.com/v1     # Required for streamable-http
+    auth:
+      type: bearer
+      token_env: REMOTE_TOOLS_TOKEN     # Env var containing the bearer token
+    tools:                              # Optional: only expose these tools
+      - search
+      - summarize
+    rate_limit: "1000/min"              # Per-upstream rate limit
+
+  - name: local-tools
+    transport: stdio
+    command: ["python", "-m", "mcp_server", "--stdio"]  # Required for stdio
+```
+
+### Roles
+
+Roles define tool access patterns and outbound credentials. Callers are assigned roles.
+
+```yaml
+roles:
+  github-user:
+    allowed_tools: ["github/*"]         # Glob patterns for tool access
+    credentials:
+      remote-tools: GITHUB_TOKEN_ENV    # Env var for outbound auth per upstream
+    rate_limit: "100/min"               # Per-caller rate limit override
+    tool_rate_limit: "10/sec"           # Per-caller-per-tool rate limit override
+
+  admin:
+    allowed_tools: ["*"]                # Full access
+    rate_limit: "1000/min"
+```
+
+### Rate Limits
+
+Global defaults for rate limiting. Role-specific overrides take precedence.
+
+```yaml
+rate_limits:
+  default_caller: "100/min"             # Per-caller default
+  default_tool: "10/sec"                # Per-caller-per-tool default
+  default_upstream: "1000/min"          # Per-upstream default
+```
+
+Rate limit format: `N/unit` where unit is `sec`, `min`, or `hour`.
+
+### Logging
+
+```yaml
+logging:
+  level: "info"    # debug, info, warn, error
+  format: "json"   # json or text
+```
+
+### Audit
+
+```yaml
+audit:
+  enabled: true
+  database: "audit.db"   # SQLite database for audit entries
+```
+
+## Authentication Setup
+
+Stile uses API keys with SHA-256 hashing and a SQLite-backed caller store.
+
+**1. Enable auth** by setting `db_path` in config and defining roles:
+
+```yaml
+server:
+  db_path: "stile.db"
+roles:
+  reader:
+    allowed_tools: ["search/*"]
+```
+
+**2. Create callers** via the CLI:
+
+```bash
+./stile add-caller -name alice -db stile.db
+./stile add-key -caller alice -label "dev-key" -db stile.db
+# Outputs: sk-<hex key>
+./stile assign-role -caller alice -role reader -db stile.db
+```
+
+Or via the Admin API (see below).
+
+**3. Use the key** in requests:
+
+```bash
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer sk-<your-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+Callers only see tools matching their roles' `allowed_tools` patterns. Calls to tools outside their access are rejected with a JSON-RPC error.
+
+## Admin Endpoints
+
+Admin endpoints require the `ADMIN_API_KEY` environment variable to be set. Without it (and with no callers), they run in open dev mode.
+
+```bash
+export ADMIN_API_KEY="my-admin-secret"
+```
+
+### Tool Cache
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/admin/refresh` | Refresh tool cache from all upstreams |
+| POST | `/admin/reload` | Reload entire config file |
+
+### Caller Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/admin/callers` | Create a caller (`{"name": "..."}`) |
+| GET | `/admin/callers` | List all callers |
+| GET | `/admin/callers/{name}` | Get caller details |
+| DELETE | `/admin/callers/{name}` | Delete a caller |
+| POST | `/admin/callers/{name}/keys` | Create API key (`{"label": "..."}`) |
+| GET | `/admin/callers/{name}/keys` | List caller's keys |
+| DELETE | `/admin/callers/{name}/keys/{id}` | Delete a key |
+| POST | `/admin/callers/{name}/roles` | Assign role (`{"role": "..."}`) |
+| GET | `/admin/callers/{name}/roles` | List caller's roles |
+| DELETE | `/admin/callers/{name}/roles/{role}` | Unassign role |
+
+All admin endpoints require `Authorization: Bearer <ADMIN_API_KEY>`.
+
+## Observability
+
+### Logging
+
+Structured JSON logs to stderr by default. Configure level and format in the config file.
+
+### Prometheus Metrics
+
+Available at `GET /metrics`:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `stile_requests_total` | Counter | caller, tool, upstream, status | Total tool call requests |
+| `stile_request_duration_seconds` | Histogram | caller, tool, upstream | Request latency |
+| `stile_upstream_health` | Gauge | upstream | 1 = healthy, 0 = unhealthy |
+| `stile_rate_limit_rejections_total` | Counter | caller, tool | Rate limit denials |
+| `stile_tool_cache_refresh_total` | Counter | upstream, status | Tool discovery refresh attempts |
+
+### Audit Log
+
+When enabled, every `tools/call` is logged to a SQLite database with: timestamp, caller, method, tool, upstream, params, status, and latency.
+
+## Deployment
+
+### Docker
+
+The default `Dockerfile` builds a minimal image (distroless, just the Stile binary) for HTTP-only upstreams:
+
+```bash
+docker build -t stile .
+docker run -p 8080:8080 -v ./config.yaml:/etc/stile/config.yaml:ro stile
+```
+
+### Docker Compose
+
+```bash
+docker compose up
+```
+
+### Full example with stdio upstreams
+
+`Dockerfile.example` and `docker-compose.example.yml` show a complete setup with GitHub, Filesystem, and Fetch MCP servers (stdio) plus a mock SSE server (HTTP). This requires Node.js and Python in the image:
+
+```bash
+export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
+export ADMIN_API_KEY="pick-a-secret"
+docker compose -f docker-compose.example.yml up --build
+```
+
+See `configs/example.yaml` for the matching config with auth, roles, rate limiting, and audit logging.
+
+### Health Check Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /healthz` | Liveness probe (always 200) |
+| `GET /readyz` | Readiness probe (200 if at least one upstream healthy, 503 otherwise) |
+
+Compatible with Kubernetes liveness/readiness probes:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+```
+
+### Graceful Shutdown
+
+Stile handles `SIGINT`/`SIGTERM` by draining in-flight requests before exiting. `SIGHUP` triggers a config reload without restart.
 
 ## Running Tests
 
 ```bash
-go test ./...
-go vet ./...
+go build ./...                              # Build everything
+go test ./...                               # Run all tests (unit + integration)
+go test ./tests/integration/ -v -count=1    # Run integration tests only
+go vet ./...                                # Static analysis
 ```
 
-## Project Structure
+## Architecture
+
+See [docs/stile-design-doc.md](docs/stile-design-doc.md) for the full design and [docs/request-flow.md](docs/request-flow.md) for an end-to-end request walkthrough.
 
 ```
-cmd/gateway/         Entrypoint — wires config, proxy, and server together
-configs/             YAML config files
+cmd/gateway/         Entrypoint (config, wiring, signal handling, CLI)
 internal/
   jsonrpc/           JSON-RPC 2.0 codec
-  config/            Config loading (immutable types with getters)
-  transport/         Transport interface + HTTP client implementation
-  proxy/             Proxy handler (tool discovery, request forwarding)
-  server/            Inbound HTTP server (MCP Streamable HTTP)
-scripts/             Test/dev helper scripts
-docs/                Design doc and task definitions
+  config/            YAML config loading (immutable types with getters)
+  transport/         Transport interface + HTTP and stdio implementations
+  router/            Tool discovery, routing, caching
+  auth/              API key auth, caller store, role-based access control
+  policy/            Token bucket rate limiting (per-caller, per-tool, per-upstream)
+  proxy/             Core proxy handler
+  server/            Inbound HTTP server
+  health/            Upstream health checks, /healthz and /readyz
+  admin/             Admin API for caller/key management
+  audit/             Append-only audit log (SQLite)
+  metrics/           Prometheus metrics
+tests/integration/   End-to-end integration tests
+configs/             Example config files
+docs/                Design doc, task definitions, request flow
 ```
