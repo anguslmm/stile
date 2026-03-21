@@ -49,8 +49,13 @@ func NewStdioTransport(cfg config.UpstreamConfig) (*StdioTransport, error) {
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("transport/stdio: command is required")
 	}
+	var env []string
+	for k, v := range cfg.Env() {
+		env = append(env, k+"="+v)
+	}
 	return &StdioTransport{
 		command:        cmd,
+		env:            env,
 		name:           cfg.Name(),
 		maxRestarts:    10,
 		startupTimeout: 10 * time.Second,
@@ -195,6 +200,7 @@ func (t *StdioTransport) RoundTrip(_ context.Context, req *jsonrpc.Request) (Tra
 		return nil, fmt.Errorf("transport/stdio: unmarshal response: %w", err)
 	}
 
+	t.ResetBackoff()
 	return NewJSONResult(&resp), nil
 }
 

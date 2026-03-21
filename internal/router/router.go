@@ -82,7 +82,12 @@ func New(transports map[string]transport.Transport, configs []config.UpstreamCon
 		})
 	}
 
-	rt.Refresh(context.Background())
+	result := rt.Refresh(context.Background())
+	for name, us := range result.Upstreams {
+		if us.Stale {
+			slog.Warn("initial route refresh failed for upstream", "upstream", name)
+		}
+	}
 
 	return rt, nil
 }

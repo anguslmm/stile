@@ -234,6 +234,7 @@ type UpstreamConfig struct {
 	name      string
 	url       string
 	command   []string
+	env       map[string]string
 	transport string
 	auth      *AuthConfig
 	tools     []string
@@ -245,6 +246,18 @@ func (u *UpstreamConfig) URL() string     { return u.url }
 func (u *UpstreamConfig) Transport() string { return u.transport }
 func (u *UpstreamConfig) Auth() *AuthConfig  { return u.auth }
 func (u *UpstreamConfig) RateLimit() *RateLimit { return u.rateLimit }
+
+// Env returns a copy of the environment variable map for stdio upstreams.
+func (u *UpstreamConfig) Env() map[string]string {
+	if u.env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(u.env))
+	for k, v := range u.env {
+		out[k] = v
+	}
+	return out
+}
 
 // Command returns a copy of the command slice.
 func (u *UpstreamConfig) Command() []string {
@@ -321,13 +334,14 @@ type rawServerConfig struct {
 }
 
 type rawUpstreamConfig struct {
-	Name      string         `yaml:"name"`
-	URL       string         `yaml:"url"`
-	Command   []string       `yaml:"command"`
-	Transport string         `yaml:"transport"`
-	Auth      *rawAuthConfig `yaml:"auth"`
-	Tools     []string       `yaml:"tools"`
-	RateLimit string         `yaml:"rate_limit"`
+	Name      string            `yaml:"name"`
+	URL       string            `yaml:"url"`
+	Command   []string          `yaml:"command"`
+	Env       map[string]string `yaml:"env"`
+	Transport string            `yaml:"transport"`
+	Auth      *rawAuthConfig    `yaml:"auth"`
+	Tools     []string          `yaml:"tools"`
+	RateLimit string            `yaml:"rate_limit"`
 }
 
 type rawAuthConfig struct {
@@ -430,6 +444,12 @@ func convert(raw rawConfig) (*Config, error) {
 		if ru.Command != nil {
 			u.command = make([]string, len(ru.Command))
 			copy(u.command, ru.Command)
+		}
+		if ru.Env != nil {
+			u.env = make(map[string]string, len(ru.Env))
+			for k, v := range ru.Env {
+				u.env[k] = v
+			}
 		}
 		if ru.Auth != nil {
 			u.auth = &AuthConfig{

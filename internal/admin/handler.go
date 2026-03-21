@@ -4,9 +4,9 @@ package admin
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/anguslmm/stile/internal/auth"
@@ -59,7 +59,7 @@ func (h *Handler) createCaller(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.AddCaller(req.Name); err != nil {
-		if isDuplicateError(err) {
+		if errors.Is(err, auth.ErrDuplicate) {
 			writeJSON(w, http.StatusConflict, errorBody("caller already exists"))
 			return
 		}
@@ -189,6 +189,12 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	callerName := r.PathValue("name")
 
+	// Verify caller exists.
+	if _, err := h.store.GetCaller(callerName); err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody("caller not found"))
+		return
+	}
+
 	keys, err := h.store.ListKeys(callerName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
@@ -240,7 +246,7 @@ func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.AssignRole(callerName, req.Role); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, auth.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, errorBody("caller not found"))
 			return
 		}
@@ -358,7 +364,3 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func isDuplicateError(err error) bool {
-	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
-		strings.Contains(err.Error(), "already exists")
-}

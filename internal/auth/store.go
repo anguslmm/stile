@@ -4,10 +4,20 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+var (
+	// ErrNotFound indicates the requested entity does not exist.
+	ErrNotFound = errors.New("auth: not found")
+
+	// ErrDuplicate indicates a uniqueness constraint violation.
+	ErrDuplicate = errors.New("auth: duplicate")
 )
 
 var (
@@ -94,7 +104,7 @@ func (s *SQLiteStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
 		WHERE k.key_hash = ?
 	`, hashedKey[:]).Scan(&name)
 	if err != nil {
-		return nil, fmt.Errorf("auth: key not found")
+		return nil, fmt.Errorf("auth: key not found: %w", ErrNotFound)
 	}
 
 	return &Caller{Name: name}, nil
@@ -138,6 +148,9 @@ func (s *SQLiteStore) HasCallers() (bool, error) {
 func (s *SQLiteStore) AddCaller(name string) error {
 	_, err := s.db.Exec("INSERT INTO callers (name) VALUES (?)", name)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("auth: caller %q already exists: %w", name, ErrDuplicate)
+		}
 		return fmt.Errorf("auth: insert caller: %w", err)
 	}
 	return nil
@@ -148,7 +161,7 @@ func (s *SQLiteStore) AddKey(callerName string, keyHash [32]byte, label string) 
 	var callerID int64
 	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
 	if err != nil {
-		return fmt.Errorf("auth: caller %q not found", callerName)
+		return fmt.Errorf("auth: caller %q not found: %w", callerName, ErrNotFound)
 	}
 	_, err = s.db.Exec(
 		"INSERT INTO api_keys (caller_id, key_hash, label) VALUES (?, ?, ?)",
@@ -166,7 +179,7 @@ func (s *SQLiteStore) AssignRole(callerName string, role string) error {
 	var callerID int64
 	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
 	if err != nil {
-		return fmt.Errorf("auth: caller %q not found", callerName)
+		return fmt.Errorf("auth: caller %q not found: %w", callerName, ErrNotFound)
 	}
 	_, err = s.db.Exec(
 		"INSERT OR IGNORE INTO caller_roles (caller_id, role) VALUES (?, ?)",
@@ -184,7 +197,7 @@ func (s *SQLiteStore) UnassignRole(callerName string, role string) error {
 	var callerID int64
 	err := s.db.QueryRow("SELECT id FROM callers WHERE name = ?", callerName).Scan(&callerID)
 	if err != nil {
-		return fmt.Errorf("auth: caller %q not found", callerName)
+		return fmt.Errorf("auth: caller %q not found: %w", callerName, ErrNotFound)
 	}
 	result, err := s.db.Exec(
 		"DELETE FROM caller_roles WHERE caller_id = ? AND role = ?",
@@ -198,7 +211,7 @@ func (s *SQLiteStore) UnassignRole(callerName string, role string) error {
 		return fmt.Errorf("auth: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("auth: caller %q does not have role %q", callerName, role)
+		return fmt.Errorf("auth: caller %q does not have role %q: %w", callerName, role, ErrNotFound)
 	}
 	return nil
 }
@@ -214,7 +227,7 @@ func (s *SQLiteStore) DeleteCaller(name string) error {
 		return fmt.Errorf("auth: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("auth: caller %q not found", name)
+		return fmt.Errorf("auth: caller %q not found: %w", name, ErrNotFound)
 	}
 	return nil
 }
@@ -271,7 +284,7 @@ func (s *SQLiteStore) GetCaller(name string) (*CallerDetail, error) {
 	var createdStr string
 	err := s.db.QueryRow("SELECT created_at FROM callers WHERE name = ?", name).Scan(&createdStr)
 	if err != nil {
-		return nil, fmt.Errorf("auth: caller %q not found", name)
+		return nil, fmt.Errorf("auth: caller %q not found: %w", name, ErrNotFound)
 	}
 
 	keys, err := s.ListKeys(name)
@@ -335,7 +348,7 @@ func (s *SQLiteStore) DeleteKey(callerName string, keyID int64) error {
 		return fmt.Errorf("auth: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("auth: key %d not found for caller %q", keyID, callerName)
+		return fmt.Errorf("auth: key %d not found for caller %q: %w", keyID, callerName, ErrNotFound)
 	}
 	return nil
 }
@@ -370,7 +383,7 @@ func (s *SQLiteStore) RevokeKey(callerName string, label string) error {
 		return fmt.Errorf("auth: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("auth: no key with label %q found for caller %q", label, callerName)
+		return fmt.Errorf("auth: no key with label %q found for caller %q: %w", label, callerName, ErrNotFound)
 	}
 	return nil
 }
@@ -415,6 +428,11 @@ func needsFullMigration(db *sql.DB) bool {
 
 	// Pre-6.2: api_keys exists but caller_roles doesn't.
 	return callerRolesExists == 0
+}
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE constraint failure.
+func isUniqueViolation(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 // parseTime parses a SQLite DATETIME string into time.Time.

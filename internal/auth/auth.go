@@ -87,8 +87,11 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 
 		var compiled []glob.Glob
 		for _, pattern := range role.AllowedTools() {
-			// Patterns are already validated at config load time.
-			g, _ := glob.Compile(pattern)
+			g, err := glob.Compile(pattern)
+			if err != nil {
+				slog.Error("invalid glob pattern, skipping", "pattern", pattern, "role", role.Name(), "error", err)
+				continue
+			}
 			compiled = append(compiled, g)
 		}
 		globs[role.Name()] = compiled
@@ -233,6 +236,7 @@ func AdminAuthMiddleware(adminKeyHash [32]byte, store CallerStore, devMode bool)
 
 func writeJSONRPCError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
 	fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":%d,"message":%q},"id":null}`, code, message)
 }
 

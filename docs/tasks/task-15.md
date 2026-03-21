@@ -1,6 +1,6 @@
 # Task 15: Code Health and Minor Fixes
 
-**Status:** todo
+**Status:** done
 **Depends on:** 12, 13, 14
 
 ---
