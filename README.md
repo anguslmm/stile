@@ -318,6 +318,10 @@ Stile does not terminate TLS natively (this is planned — see task 26). In prod
 
 In all cases, Stile should listen on `127.0.0.1` or a private network interface — never bind to `0.0.0.0` without TLS in front.
 
+## Scaling
+
+Stile supports multi-instance deployment with Postgres and Redis for shared state. See [docs/horizontal-scaling.md](docs/horizontal-scaling.md) for the full guide.
+
 ## Running Tests
 
 ```bash

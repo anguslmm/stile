@@ -29,7 +29,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 16 | OpenTelemetry observability (traces, metrics migration, log correlation) | [task-16.md](tasks/task-16.md) | done |
 | 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | done |
 | 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | done |
-| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | todo |
+| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | done |
 | 18.1 | Remove config hot-reload mechanism | [task-18.1.md](tasks/task-18.1.md) | done |
 | 20 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-20.md](tasks/task-20.md) | todo |
 | 21 | Trace context propagation | [task-21.md](tasks/task-21.md) | todo |
@@ -38,6 +38,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 24 | Operational runbooks | [task-24.md](tasks/task-24.md) | todo |
 | 25 | Centralized health checks | [task-25.md](tasks/task-25.md) | todo |
 | 26 | TLS and mTLS support | [task-26.md](tasks/task-26.md) | todo |
+| 27 | `stile wrap` — stdio-to-HTTP adapter subcommand | [task-27.md](tasks/task-27.md) | todo |
 
 ## Notes
 

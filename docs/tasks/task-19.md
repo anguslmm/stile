@@ -1,6 +1,6 @@
 # Task 19: Horizontal Scaling Documentation and Stdio Guidance
 
-**Status:** todo
+**Status:** done
 **Depends on:** 17, 18
 
 ---
