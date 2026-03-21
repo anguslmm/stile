@@ -1,6 +1,6 @@
 # Task 14: SQLite and Rate Limiter Hardening
 
-**Status:** todo
+**Status:** done
 **Depends on:** 12
 **Needed by:** 15
 

@@ -218,6 +218,8 @@ func (rl *RateLimiter) getOrCreateCallerLimiterLocked(caller string) *rate.Limit
 	return lim
 }
 
+const maxToolLimitersPerCaller = 1000
+
 func (rl *RateLimiter) getOrCreateToolLimiterLocked(caller, tool string) *rate.Limiter {
 	callerTools, ok := rl.toolLimiters[caller]
 	if !ok {
@@ -238,6 +240,11 @@ func (rl *RateLimiter) getOrCreateToolLimiterLocked(caller, tool string) *rate.L
 
 	if r == rate.Inf {
 		return nil
+	}
+
+	if len(callerTools) >= maxToolLimitersPerCaller {
+		// Return a one-shot limiter instead of caching to prevent unbounded growth.
+		return rate.NewLimiter(r, b)
 	}
 
 	lim := rate.NewLimiter(r, b)

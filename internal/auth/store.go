@@ -52,20 +52,17 @@ type SQLiteStore struct {
 // NewSQLiteStore opens (or creates) a SQLite database at dbPath, runs
 // migrations, and returns the store.
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// Set PRAGMAs via DSN so they apply to every connection in the pool.
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(wal)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("auth: open database: %w", err)
 	}
 
-	// Enable WAL mode and foreign keys.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("auth: set journal mode: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("auth: enable foreign keys: %w", err)
-	}
+	// Configure connection pool.
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(30 * time.Minute)
 
 	// Migrate from old schema: if api_keys exists but caller_roles does not,
 	// this is the pre-6.2 schema. Drop everything and recreate.
@@ -196,7 +193,10 @@ func (s *SQLiteStore) UnassignRole(callerName string, role string) error {
 	if err != nil {
 		return fmt.Errorf("auth: unassign role: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("auth: caller %q does not have role %q", callerName, role)
 	}
@@ -209,7 +209,10 @@ func (s *SQLiteStore) DeleteCaller(name string) error {
 	if err != nil {
 		return fmt.Errorf("auth: delete caller: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("auth: caller %q not found", name)
 	}
@@ -327,7 +330,10 @@ func (s *SQLiteStore) DeleteKey(callerName string, keyID int64) error {
 	if err != nil {
 		return fmt.Errorf("auth: delete key: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("auth: key %d not found for caller %q", keyID, callerName)
 	}
@@ -359,7 +365,10 @@ func (s *SQLiteStore) RevokeKey(callerName string, label string) error {
 	if err != nil {
 		return fmt.Errorf("auth: revoke key: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("auth: no key with label %q found for caller %q", label, callerName)
 	}

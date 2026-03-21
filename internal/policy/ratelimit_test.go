@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/anguslmm/stile/internal/config"
@@ -218,6 +219,32 @@ rate_limits:
 	}
 	if denial.Level != "caller" {
 		t.Errorf("expected denial level 'caller', got %q", denial.Level)
+	}
+}
+
+func TestToolLimiterMapCapped(t *testing.T) {
+	rl := rateLimiterFromYAML(t, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_tool: 1000/sec
+`)
+
+	// Create more than maxToolLimitersPerCaller distinct tools.
+	for i := 0; i < 1100; i++ {
+		tool := fmt.Sprintf("tool-%d", i)
+		rl.Allow("attacker", tool, "svc")
+	}
+
+	// The map should be capped at maxToolLimitersPerCaller.
+	rl.mu.Lock()
+	count := len(rl.toolLimiters["attacker"])
+	rl.mu.Unlock()
+
+	if count > maxToolLimitersPerCaller {
+		t.Errorf("tool limiter map grew to %d, expected cap at %d", count, maxToolLimitersPerCaller)
 	}
 }
 

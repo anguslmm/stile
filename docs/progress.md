@@ -23,13 +23,20 @@ This document tracks the status of each implementation task. Agents should read 
 | 10.1 | Admin API — role management endpoints | [task-10.1.md](tasks/task-10.1.md) | done |
 | 11 | Integration tests + release packaging | [task-11.md](tasks/task-11.md) | done |
 | 12 | Critical security fixes (timing attack, rand error, body/batch limits) | [task-12.md](tasks/task-12.md) | done |
-| 13 | HTTP transport hardening (timeout, SSE buffer, health tracking) | [task-13.md](tasks/task-13.md) | todo |
-| 14 | SQLite + rate limiter hardening (busy timeout, pool, map cap) | [task-14.md](tasks/task-14.md) | todo |
+| 13 | HTTP transport hardening (timeout, SSE buffer, health tracking) | [task-13.md](tasks/task-13.md) | done |
+| 14 | SQLite + rate limiter hardening (busy timeout, pool, map cap) | [task-14.md](tasks/task-14.md) | done |
 | 15 | Code health + minor fixes (typed errors, dead fields, defensive checks) | [task-15.md](tasks/task-15.md) | todo |
-| 16 | Configurable database backend with Postgres support | [task-16.md](tasks/task-16.md) | todo |
-| 17 | Redis-backed rate limiting | [task-17.md](tasks/task-17.md) | todo |
-| 18 | Config reload broadcast (Postgres NOTIFY / Redis pub/sub) | [task-18.md](tasks/task-18.md) | todo |
-| 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | todo |
+| 16 | OpenTelemetry observability (traces, metrics migration, log correlation) | [task-16.md](tasks/task-16.md) | todo |
+| 17 | Configurable database backend with Postgres support | [task-17.md](tasks/task-17.md) | todo |
+| 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | todo |
+| 19 | Config reload broadcast (Postgres NOTIFY / Redis pub/sub) | [task-19.md](tasks/task-19.md) | todo |
+| 20 | Horizontal scaling documentation and stdio guidance | [task-20.md](tasks/task-20.md) | todo |
+| 21 | TLS and mTLS support | [task-21.md](tasks/task-21.md) | todo |
+| 22 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-22.md](tasks/task-22.md) | todo |
+| 23 | Trace context propagation | [task-23.md](tasks/task-23.md) | todo |
+| 24 | Rate limit response headers | [task-24.md](tasks/task-24.md) | todo |
+| 25 | Load testing and performance benchmarks | [task-25.md](tasks/task-25.md) | todo |
+| 26 | Operational runbooks | [task-26.md](tasks/task-26.md) | todo |
 
 ## Notes
 

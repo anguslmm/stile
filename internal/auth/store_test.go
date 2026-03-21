@@ -317,6 +317,41 @@ func TestGenerateAPIKeyPropagatesError(t *testing.T) {
 	}
 }
 
+func TestConcurrentWrites(t *testing.T) {
+	store := newTestStore(t)
+
+	// Pre-create callers.
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("caller-%d", i)
+		if err := store.AddCaller(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Concurrent role assignments should not produce "database is locked" errors.
+	errs := make(chan error, 100)
+	for i := 0; i < 10; i++ {
+		i := i
+		go func() {
+			name := fmt.Sprintf("caller-%d", i)
+			for j := 0; j < 10; j++ {
+				role := fmt.Sprintf("role-%d", j)
+				if err := store.AssignRole(name, role); err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+
+	for i := 0; i < 10; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent write failed: %v", err)
+		}
+	}
+}
+
 func TestGenerateAPIKeySuccess(t *testing.T) {
 	key, err := GenerateAPIKey()
 	if err != nil {
