@@ -1,112 +1,106 @@
-# Task 25: Operational Runbooks
+# Task 25: Centralized Health Checks
 
 **Status:** todo
-**Depends on:** 16, 19, 20, 21
+**Depends on:** 9, 18, 19
 
 ---
 
 ## Goal
 
-Write runbooks for common production failure scenarios so that an oncall engineer who has never worked on Stile can diagnose and resolve issues without escalating. This is a documentation task, not a code task.
+Move upstream health checking out of individual Stile gateway instances and into a single centralized process. Today every gateway replica independently polls every upstream, which multiplies health-check traffic by the number of replicas. A centralized approach checks each upstream once and publishes the results to a shared store (Redis) that all gateway instances read.
 
 ---
 
-## 1. Create `docs/runbooks/` directory
+## Problem
 
-Each runbook follows a consistent structure:
+With N gateway replicas and M upstreams, the current design sends N*M health-check requests. This wastes upstream capacity and can look like a DDoS from the gateway fleet. It also means each replica may have a slightly different view of upstream health during transient failures, leading to inconsistent routing.
 
-```markdown
-# <Alert / Symptom>
+---
 
-## Severity
-P1 / P2 / P3
+## Design Options
 
-## Symptoms
-What the oncall engineer observes (alert text, dashboard signals, user reports).
+### Option A: Separate health-check sidecar
 
-## Likely Causes
-Ordered by probability.
+A small standalone binary (`stile-healthcheck` or a subcommand like `stile health-agent`) that:
 
-## Diagnosis Steps
-Specific commands and queries to narrow down the cause.
+1. Reads the same Stile config file to discover upstreams
+2. Runs the health-check loop (reusing `internal/health` logic)
+3. Writes results to Redis with a TTL (e.g. `stile:health:<upstream-name> = {status, last_checked, latency_ms}`, TTL = 2x check interval)
+4. Gateway instances read from Redis instead of polling upstreams directly
 
-## Remediation
-Step-by-step fix for each cause.
+**Pros:** Simple, stateless, no coordination needed — just run one instance (or two for redundancy). Easy to deploy as a Kubernetes CronJob or sidecar.
 
-## Escalation
-When and who to escalate to if remediation doesn't resolve.
+**Cons:** Another binary to deploy and monitor. If the health-checker dies, cached results expire and gateways must decide on a fallback (assume healthy? assume unhealthy?).
+
+### Option B: Leader election among gateway instances
+
+One gateway replica is elected leader and runs health checks on behalf of the fleet, publishing to Redis.
+
+**Pros:** No separate binary.
+
+**Cons:** Leader election adds significant complexity (Redis-based locking, lease renewal, split-brain handling). If the leader is slow or partitioned, health data goes stale. Not worth the complexity for a stateless proxy.
+
+### Recommendation
+
+**Option A** (separate sidecar). Leader election is over-engineered for this use case. A simple process that reads config, checks health, writes to Redis is easy to reason about, test, and operate.
+
+---
+
+## Implementation Plan
+
+### 1. Health result cache interface
+
+Define an interface in `internal/health/` for reading and writing health status:
+
+```go
+type StatusStore interface {
+    Get(ctx context.Context, upstream string) (Status, error)
+    Set(ctx context.Context, upstream string, status Status, ttl time.Duration) error
+}
 ```
 
----
+With two implementations:
+- `LocalStore` — in-process (current behavior, for single-instance deployments)
+- `RedisStore` — reads/writes health status to Redis (reuse the Redis connection from rate limiting)
 
-## 2. Runbooks to write
+### 2. Gateway: read health from store
 
-### Upstream failures
+When `health.store: redis` is configured, the gateway's health checker stops polling upstreams and instead reads cached results from Redis. The `/healthz` and `/readyz` endpoints use the store. If a key is missing or expired, treat the upstream as unknown (configurable: healthy-by-default or unhealthy-by-default).
 
-**`upstream-unhealthy.md`** — One or more upstreams marked unhealthy.
-- Check `/readyz`, upstream health dashboard
-- Verify upstream is reachable from the Stile host
-- Check circuit breaker state (task 21 metrics)
-- Remediation: fix upstream, or remove from config and rolling restart if permanently gone
+### 3. Health-check agent
 
-**`upstream-high-latency.md`** — Upstream responding slowly, causing timeouts.
-- Check per-upstream latency metrics and traces
-- Look for upstream resource exhaustion
-- Remediation: increase per-upstream timeout (short-term), fix upstream (long-term)
+A new `cmd/healthagent/main.go` (or `stile health-agent` subcommand) that:
 
-### Rate limiting
+- Loads config (reuses `internal/config`)
+- Creates transports for each upstream (reuses `internal/transport`)
+- Runs the health-check loop (reuses `internal/health`)
+- Writes results to Redis via `RedisStore`
+- Exposes its own `/healthz` for liveness
 
-**`rate-limit-exhaustion.md`** — Callers hitting rate limits unexpectedly.
-- Check `stile_rate_limit_rejections_total` by caller and tool
-- Verify rate limit config is correct
-- Check for runaway agents making excessive calls
-- Remediation: adjust limits, identify and fix misbehaving caller
+### 4. Config additions
 
-### Database
+```yaml
+health:
+  store: local          # or "redis"
+  check_interval: 10s
+  redis:                # only needed for store: redis
+    # inherits from top-level redis config, or can override
+```
 
-**`database-connection-exhausted.md`** — Auth or audit DB connections maxed out.
-- Check connection pool metrics
-- Look for long-running queries or lock contention
-- Remediation: increase pool size, investigate slow queries, restart if deadlocked
+### 5. Fallback behavior
 
-### Redis (if using Redis rate limiting)
+When using Redis store and a health key is missing/expired:
 
-**`redis-unavailable.md`** — Redis for rate limiting is unreachable.
-- Rate limiter should fail closed (all requests denied)
-- Check Redis connectivity, memory, replication status
-- Remediation: restore Redis, or temporarily switch to local rate limiting with config change and rolling restart if global enforcement can be relaxed
-
-### TLS
-
-**`tls-certificate-expiry.md`** — TLS certificates approaching expiration.
-- Check cert expiry dates
-- Remediation: rotate certs, reload config (SIGHUP) or rolling restart
-
-### Memory / resource
-
-**`high-memory-usage.md`** — Stile instance consuming excessive memory.
-- Check goroutine count (possible leak from unclosed SSE streams)
-- Check request body sizes
-- Check tool cache size
-- Remediation: identify leak source, restart instance (short-term)
-
-### Config
-
-**`config-reload-failure.md`** — Config reload via SIGHUP or admin API failed.
-- Check structured logs for reload error details
-- Common causes: YAML syntax error, invalid upstream URL, missing TLS cert file
-- Remediation: fix config file, retry reload
-
----
-
-## 3. Link from operations docs
-
-Add a "Troubleshooting" section to `docs/horizontal-scaling.md` (task 19) and the README linking to the runbooks directory.
+- Default: treat upstream as healthy (fail-open) to avoid outages if the health agent is down
+- Configurable via `health.missing_status: healthy | unhealthy`
 
 ---
 
 ## Verification
 
-- Each runbook references specific metrics, endpoints, or log fields that exist in the codebase
-- Runbooks are reviewed by someone unfamiliar with Stile to verify clarity
-- All referenced config fields and commands are accurate
+- `go build ./...` passes for both gateway and health agent
+- `go test ./...` passes
+- Health agent writes status to Redis with correct TTL
+- Gateway reads cached health status instead of polling upstreams
+- When health agent stops, keys expire and gateway falls back to configured default
+- Single-instance deployments still work with `store: local` (no Redis needed)

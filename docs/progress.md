@@ -31,13 +31,13 @@ This document tracks the status of each implementation task. Agents should read 
 | 18 | Redis-backed rate limiting | [task-18.md](tasks/task-18.md) | done |
 | 19 | Horizontal scaling documentation and stdio guidance | [task-19.md](tasks/task-19.md) | todo |
 | 18.1 | Remove config hot-reload mechanism | [task-18.1.md](tasks/task-18.1.md) | done |
-| 20 | TLS and mTLS support | [task-20.md](tasks/task-20.md) | todo |
-| 21 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-21.md](tasks/task-21.md) | todo |
-| 22 | Trace context propagation | [task-22.md](tasks/task-22.md) | todo |
-| 23 | Rate limit response headers | [task-23.md](tasks/task-23.md) | todo |
-| 24 | Load testing and performance benchmarks | [task-24.md](tasks/task-24.md) | todo |
-| 25 | Operational runbooks | [task-25.md](tasks/task-25.md) | todo |
-| 26 | Centralized health checks | [task-26.md](tasks/task-26.md) | todo |
+| 20 | Upstream resilience (circuit breakers, per-upstream timeouts, retries) | [task-20.md](tasks/task-20.md) | todo |
+| 21 | Trace context propagation | [task-21.md](tasks/task-21.md) | todo |
+| 22 | Rate limit response headers | [task-22.md](tasks/task-22.md) | todo |
+| 23 | Load testing and performance benchmarks | [task-23.md](tasks/task-23.md) | todo |
+| 24 | Operational runbooks | [task-24.md](tasks/task-24.md) | todo |
+| 25 | Centralized health checks | [task-25.md](tasks/task-25.md) | todo |
+| 26 | TLS and mTLS support | [task-26.md](tasks/task-26.md) | todo |
 
 ## Notes
 

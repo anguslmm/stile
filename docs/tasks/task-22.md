@@ -1,69 +1,70 @@
-# Task 22: Trace Context Propagation
+# Task 22: Rate Limit Response Headers
 
 **Status:** todo
-**Depends on:** 16
+**Depends on:** 15
 
 ---
 
 ## Goal
 
-Propagate W3C Trace Context headers (`traceparent`, `tracestate`) between inbound requests and outbound upstream calls so that traces are continuous from agent through Stile to upstream MCP servers. Without this, Stile's traces are isolated — you can see what happened inside the proxy but not correlate with the agent's or upstream's traces.
+Return standard rate limit headers on every response so clients can see their remaining budget and back off gracefully when approaching limits, instead of being surprised by a hard denial.
 
 ---
 
-## 1. Inbound: extract trace context from agent requests
+## 1. Add rate limit headers to all responses
 
-When an agent sends a request to Stile with a `traceparent` header, Stile should extract it and use it as the parent span rather than starting a new root trace.
+After every rate limit check (whether allowed or denied), include headers in the HTTP response:
 
-**Implementation:**
-
-- Use `go.opentelemetry.io/otel/propagation` with `propagation.TraceContext{}`
-- In `handleMCP` (or as middleware), extract the trace context from the incoming HTTP headers into the request context:
-  ```go
-  ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
-  ```
-- Any spans created from this context will automatically be children of the agent's span
-
----
-
-## 2. Outbound: inject trace context into upstream requests
-
-When Stile sends a request to an HTTP upstream, inject the current trace context into the outbound headers so the upstream can continue the trace.
-
-**Implementation:**
-
-- In `HTTPTransport.RoundTrip`, after creating the outbound `http.Request`, inject:
-  ```go
-  otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
-  ```
-- This adds `traceparent` and `tracestate` headers to the upstream request
-
----
-
-## 3. Register the propagator
-
-In `main.go` during OTel setup, register the W3C propagator globally:
-
-```go
-otel.SetTextMapPropagator(propagation.TraceContext{})
+```
+X-RateLimit-Limit: 100          # requests allowed in the window
+X-RateLimit-Remaining: 73       # requests remaining in the current window
+X-RateLimit-Reset: 1711036800   # Unix timestamp when the window resets
 ```
 
-This is a one-liner but is required for `Extract` and `Inject` to work.
+On denial, also include:
+
+```
+Retry-After: 12                 # seconds until the client should retry
+```
+
+**Implementation:**
+
+- Extend `RateLimiter.Allow()` (or add a new method) to return rate limit state alongside the allow/deny decision:
+  ```go
+  type RateLimitResult struct {
+      Allowed   bool
+      Limit     int
+      Remaining int
+      ResetAt   time.Time
+      // On denial:
+      RetryAfter time.Duration
+      Denial     *Denial  // nil if allowed
+  }
+  ```
+- In `proxy.HandleToolsCall`, after the rate limit check, set the headers on the `http.ResponseWriter` before writing the response body
+- For the local (in-memory) rate limiter, derive remaining/reset from the `rate.Limiter` token count and rate
+- For the Redis rate limiter (task 18), the sliding window Lua script can return the count and TTL alongside the allow/deny decision
 
 ---
 
-## 4. Stdio transport consideration
+## 2. Which limit to report
 
-Stdio transports communicate via JSON-RPC over stdin/stdout — there are no HTTP headers. Trace context cannot be propagated to stdio upstreams via the standard W3C mechanism.
+A request is checked against up to three limits (per-caller, per-tool, per-upstream). Report the **most restrictive** — the one with the lowest `Remaining` count. This gives clients the most useful signal.
 
-Document this limitation. If a stdio MCP server wants to participate in tracing, it would need to accept trace context as a JSON-RPC parameter extension, which is outside the MCP spec. For now, Stile's span for the stdio round-trip is the leaf span in the trace.
+If multiple limits deny the request, report the one that denied first (same as the current `Denial.Level` field).
+
+---
+
+## 3. Headers on non-tool-call requests
+
+Rate limits currently only apply to `tools/call`. For `tools/list`, `initialize`, and `ping`, don't include rate limit headers (there's no limit to report).
 
 ---
 
 ## Verification
 
-- Add test: inbound request with `traceparent` header creates a child span (not a new root)
-- Add test: outbound HTTP request includes `traceparent` header matching the current span
-- Add test: no `traceparent` on inbound request creates a new root trace (existing behavior)
-- Add test: stdio transport works without error when tracing is enabled (no header injection attempted)
-- End-to-end: agent → Stile → HTTP upstream produces a single connected trace with spans from all three
+- Add test: allowed request includes `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers
+- Add test: denied request includes `Retry-After` header
+- Add test: `Remaining` decreases with each request
+- Add test: headers reflect the most restrictive of the applicable limits
+- Add test: non-tool-call requests do not include rate limit headers

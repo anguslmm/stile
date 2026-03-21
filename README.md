@@ -291,6 +291,33 @@ readinessProbe:
 
 Stile handles `SIGINT`/`SIGTERM` by draining in-flight requests before exiting.
 
+### TLS / Transport Security
+
+Stile does not terminate TLS natively (this is planned — see task 26). In production, terminate TLS at the layer in front of Stile:
+
+- **Cloud load balancer** (AWS ALB, GCP HTTPS LB, Azure App Gateway) — the standard approach. TLS is handled for you; Stile receives plaintext on a private network.
+- **Reverse proxy sidecar** — for bare-metal or VM deployments without a managed LB:
+  - **[Caddy](https://caddyserver.com/)** — automatic HTTPS with Let's Encrypt, zero config. Recommended for simplicity.
+    ```
+    stile.example.com {
+        reverse_proxy localhost:8080
+    }
+    ```
+  - **nginx** — widely deployed, well-understood:
+    ```nginx
+    server {
+        listen 443 ssl;
+        ssl_certificate     /etc/ssl/cert.pem;
+        ssl_certificate_key /etc/ssl/key.pem;
+        location / {
+            proxy_pass http://127.0.0.1:8080;
+        }
+    }
+    ```
+- **Service mesh** (Istio, Linkerd) — if you're in Kubernetes and need mTLS between services, the mesh sidecar handles it transparently. Stile still listens on plaintext.
+
+In all cases, Stile should listen on `127.0.0.1` or a private network interface — never bind to `0.0.0.0` without TLS in front.
+
 ## Running Tests
 
 ```bash
