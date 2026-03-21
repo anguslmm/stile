@@ -7,26 +7,22 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestRequestCounterIncrements(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.RequestsTotal.WithLabelValues("alice", "search", "upstream-a", "ok").Inc()
-	m.RequestsTotal.WithLabelValues("alice", "search", "upstream-a", "ok").Inc()
-	m.RequestsTotal.WithLabelValues("bob", "query", "upstream-b", "error").Inc()
+	m.RecordRequest("alice", "search", "upstream-a", "ok")
+	m.RecordRequest("alice", "search", "upstream-a", "ok")
+	m.RecordRequest("bob", "query", "upstream-b", "error")
 
-	val := testutil.ToFloat64(m.RequestsTotal.WithLabelValues("alice", "search", "upstream-a", "ok"))
-	if val != 2 {
-		t.Errorf("expected alice/search counter = 2, got %f", val)
+	body := scrape(t, m)
+	if !strings.Contains(body, `stile_requests_total{caller="alice",status="ok",tool="search",upstream="upstream-a"} 2`) {
+		t.Errorf("missing alice/search counter=2 in:\n%s", body)
 	}
-
-	val = testutil.ToFloat64(m.RequestsTotal.WithLabelValues("bob", "query", "upstream-b", "error"))
-	if val != 1 {
-		t.Errorf("expected bob/query counter = 1, got %f", val)
+	if !strings.Contains(body, `stile_requests_total{caller="bob",status="error",tool="query",upstream="upstream-b"} 1`) {
+		t.Errorf("missing bob/query counter=1 in:\n%s", body)
 	}
 }
 
@@ -34,12 +30,12 @@ func TestDurationHistogramRecorded(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.RequestDuration.WithLabelValues("alice", "search", "upstream-a").Observe(0.05)
-	m.RequestDuration.WithLabelValues("alice", "search", "upstream-a").Observe(0.15)
+	m.RecordDuration("alice", "search", "upstream-a", 0.05)
+	m.RecordDuration("alice", "search", "upstream-a", 0.15)
 
-	count := testutil.CollectAndCount(m.RequestDuration)
-	if count == 0 {
-		t.Error("expected histogram to have observations")
+	body := scrape(t, m)
+	if !strings.Contains(body, "stile_request_duration_seconds") {
+		t.Errorf("missing duration histogram in:\n%s", body)
 	}
 }
 
@@ -47,11 +43,11 @@ func TestRateLimitRejectionCounted(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.RateLimitRejections.WithLabelValues("alice", "search").Inc()
+	m.RecordRateLimitRejection("alice", "search")
 
-	val := testutil.ToFloat64(m.RateLimitRejections.WithLabelValues("alice", "search"))
-	if val != 1 {
-		t.Errorf("expected rate limit rejection counter = 1, got %f", val)
+	body := scrape(t, m)
+	if !strings.Contains(body, `stile_rate_limit_rejections_total{caller="alice",tool="search"} 1`) {
+		t.Errorf("missing rate limit rejection in:\n%s", body)
 	}
 }
 
@@ -59,12 +55,12 @@ func TestToolCacheRefreshCounted(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.ToolCacheRefresh.WithLabelValues("upstream-a", "success").Inc()
-	m.ToolCacheRefresh.WithLabelValues("upstream-b", "failure").Inc()
+	m.RecordToolCacheRefresh("upstream-a", "success")
+	m.RecordToolCacheRefresh("upstream-b", "failure")
 
-	val := testutil.ToFloat64(m.ToolCacheRefresh.WithLabelValues("upstream-a", "success"))
-	if val != 1 {
-		t.Errorf("expected cache refresh success = 1, got %f", val)
+	body := scrape(t, m)
+	if !strings.Contains(body, `stile_tool_cache_refresh_total{status="success",upstream="upstream-a"} 1`) {
+		t.Errorf("missing cache refresh success in:\n%s", body)
 	}
 }
 
@@ -72,16 +68,15 @@ func TestUpstreamHealthGauge(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.UpstreamHealth.WithLabelValues("upstream-a").Set(1)
-	m.UpstreamHealth.WithLabelValues("upstream-b").Set(0)
+	m.SetUpstreamHealth("upstream-a", 1)
+	m.SetUpstreamHealth("upstream-b", 0)
 
-	val := testutil.ToFloat64(m.UpstreamHealth.WithLabelValues("upstream-a"))
-	if val != 1 {
-		t.Errorf("expected upstream-a health = 1, got %f", val)
+	body := scrape(t, m)
+	if !strings.Contains(body, `stile_upstream_health{upstream="upstream-a"} 1`) {
+		t.Errorf("missing upstream-a health=1 in:\n%s", body)
 	}
-	val = testutil.ToFloat64(m.UpstreamHealth.WithLabelValues("upstream-b"))
-	if val != 0 {
-		t.Errorf("expected upstream-b health = 0, got %f", val)
+	if !strings.Contains(body, `stile_upstream_health{upstream="upstream-b"} 0`) {
+		t.Errorf("missing upstream-b health=0 in:\n%s", body)
 	}
 }
 
@@ -89,12 +84,11 @@ func TestMetricsEndpointServes(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewForRegistry(reg)
 
-	m.RequestsTotal.WithLabelValues("alice", "search", "upstream-a", "ok").Inc()
+	m.RecordRequest("alice", "search", "upstream-a", "ok")
 
-	handler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	handler.ServeHTTP(w, r)
+	m.Handler().ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -107,4 +101,15 @@ func TestMetricsEndpointServes(t *testing.T) {
 	if !strings.Contains(body, `caller="alice"`) {
 		t.Error("metrics endpoint does not contain caller label")
 	}
+}
+
+func scrape(t *testing.T, m *Metrics) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	m.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("scrape: expected 200, got %d", w.Code)
+	}
+	return w.Body.String()
 }

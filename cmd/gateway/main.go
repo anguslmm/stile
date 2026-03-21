@@ -16,11 +16,13 @@ import (
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/health"
+	"github.com/anguslmm/stile/internal/logging"
 	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/server"
+	"github.com/anguslmm/stile/internal/telemetry"
 	"github.com/anguslmm/stile/internal/transport"
 )
 
@@ -61,11 +63,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize telemetry (tracer provider).
+	tp, err := telemetry.Init(context.Background(), cfg.Telemetry())
+	if err != nil {
+		slog.Error("init telemetry failed", "error", err)
+		os.Exit(1)
+	}
+
 	setupLogger(cfg)
 
 	slog.Info("config loaded",
 		"upstreams", len(cfg.Upstreams()),
 		"roles", len(cfg.Roles()),
+		"tracing", cfg.Telemetry().Traces().Enabled(),
 	)
 
 	m := metrics.New()
@@ -99,7 +109,7 @@ func main() {
 	}
 
 	rateLimiter := policy.NewRateLimiter(cfg)
-	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore)
+	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore, proxy.WithTracer(tp.Tracer()))
 
 	// Build health checker from router upstreams.
 	healthChecker := buildHealthChecker(rt, m)
@@ -205,6 +215,7 @@ func main() {
 	}
 	opts.HealthChecker = healthChecker
 	opts.ReloadFunc = reload
+	opts.Tracer = tp.Tracer()
 
 	// Create admin handler if auth is configured (store is available).
 	if callerStore != nil {
@@ -249,7 +260,12 @@ func main() {
 			// 3. Close router (stops background refresh and closes transports).
 			rt.Close()
 
-			// 4. Close audit log.
+			// 4. Flush and shutdown tracer provider.
+			if err := tp.Shutdown(ctx); err != nil {
+				slog.Error("tracer shutdown error", "error", err)
+			}
+
+			// 5. Close audit log.
 			if auditStore != nil {
 				auditStore.Close()
 			}
@@ -332,6 +348,7 @@ func setupLogger(cfg *config.Config) {
 	} else {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	}
+	handler = logging.NewTraceHandler(handler)
 	slog.SetDefault(slog.New(handler))
 }
 

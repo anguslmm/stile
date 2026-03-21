@@ -5,6 +5,8 @@
 #   export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
 #   export ADMIN_API_KEY="pick-a-secret"
 #   docker compose -f docker-compose.example.yml up --build
+#
+# Jaeger UI: http://localhost:16686
 services:
   stile:
     build:
@@ -19,6 +21,14 @@ services:
     environment:
       - GITHUB_PERSONAL_ACCESS_TOKEN     # required for github MCP server
       - ADMIN_API_KEY                    # protects /admin/ endpoints
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver
 
 volumes:
   stile-data:

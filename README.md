@@ -125,6 +125,18 @@ audit:
   database: "audit.db"   # SQLite database for audit entries
 ```
 
+### Telemetry
+
+```yaml
+telemetry:
+  traces:
+    enabled: false              # opt-in (default: false)
+    endpoint: "localhost:4318"  # OTLP HTTP endpoint
+    sample_rate: 1.0            # 0.0 to 1.0
+  metrics:
+    backend: prometheus         # only "prometheus" for now
+```
+
 ## Authentication Setup
 
 Stile uses API keys with SHA-256 hashing and a SQLite-backed caller store.
@@ -195,9 +207,23 @@ All admin endpoints require `Authorization: Bearer <ADMIN_API_KEY>`.
 
 ## Observability
 
+See [docs/observability.md](docs/observability.md) for the full observability guide covering traces, metrics, and log correlation.
+
+### Distributed Tracing
+
+Opt-in via the `telemetry` config section. Exports OTLP traces to any compatible backend (Tempo, Jaeger, Datadog, etc.):
+
+```yaml
+telemetry:
+  traces:
+    enabled: true
+    endpoint: "localhost:4318"
+    sample_rate: 1.0
+```
+
 ### Logging
 
-Structured JSON logs to stderr by default. Configure level and format in the config file.
+Structured JSON logs to stderr by default. When tracing is enabled, logs automatically include `trace_id` and `span_id` fields for correlation.
 
 ### Prometheus Metrics
 
@@ -295,7 +321,9 @@ internal/
   health/            Upstream health checks, /healthz and /readyz
   admin/             Admin API for caller/key management
   audit/             Append-only audit log (SQLite)
-  metrics/           Prometheus metrics
+  metrics/           Prometheus metrics (OTel API + Prometheus exporter)
+  telemetry/         OpenTelemetry tracer provider setup
+  logging/           slog trace-correlation handler
 tests/integration/   End-to-end integration tests
 configs/             Example config files
 docs/                Design doc, task definitions, request flow

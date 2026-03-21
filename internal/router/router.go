@@ -136,7 +136,7 @@ func (rt *RouteTable) Refresh(ctx context.Context) *RefreshResult {
 			status = "failure"
 		}
 		if rt.metrics != nil {
-			rt.metrics.ToolCacheRefresh.WithLabelValues(u.Name, status).Inc()
+			rt.metrics.RecordToolCacheRefresh(u.Name, status)
 		}
 		slog.Info("tool cache refresh",
 			"upstream", u.Name,

@@ -1,6 +1,6 @@
 # Task 16: OpenTelemetry Observability (Traces, Metrics Migration, Log Correlation)
 
-**Status:** todo
+**Status:** done
 **Depends on:** 15
 **Needed by:** 17
 

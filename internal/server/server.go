@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
@@ -40,6 +42,7 @@ type Server struct {
 	httpServer *http.Server
 	proxy      *proxy.Handler
 	router     *router.RouteTable
+	tracer     trace.Tracer
 
 	mu            sync.RWMutex
 	authenticator *auth.Authenticator
@@ -62,12 +65,17 @@ type Options struct {
 	HealthChecker *health.Checker
 	// ReloadFunc, if non-nil, enables the /admin/reload endpoint.
 	ReloadFunc ReloadFunc
+	// Tracer, if non-nil, enables distributed tracing on the request path.
+	Tracer trace.Tracer
 }
 
 // New creates a Server from config, proxy handler, router, metrics, and options.
 // m may be nil to disable the /metrics endpoint.
 func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics.Metrics, opts *Options) *Server {
 	s := &Server{proxy: p, router: rt}
+	if opts != nil && opts.Tracer != nil {
+		s.tracer = opts.Tracer
+	}
 
 	mux := http.NewServeMux()
 
@@ -75,11 +83,22 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 	if opts != nil && opts.Authenticator != nil {
 		s.authenticator = opts.Authenticator
 		mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+
+			var authSpan trace.Span
+			if s.tracer != nil {
+				ctx, authSpan = s.tracer.Start(ctx, "auth")
+			}
+
 			s.mu.RLock()
 			a := s.authenticator
 			s.mu.RUnlock()
 			caller, err := a.Authenticate(r)
 			if err != nil {
+				if authSpan != nil {
+					authSpan.SetStatus(codes.Error, "unauthorized")
+					authSpan.End()
+				}
 				resp := jsonrpc.NewErrorResponse(nil, -32000, "unauthorized")
 				data, _ := json.Marshal(resp)
 				w.Header().Set("Content-Type", "application/json")
@@ -87,8 +106,16 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 				return
 			}
 			if caller != nil {
-				r = r.WithContext(auth.ContextWithCaller(r.Context(), caller))
+				ctx = auth.ContextWithCaller(ctx, caller)
+				if authSpan != nil {
+					authSpan.SetAttributes(attribute.String("mcp.caller", caller.Name))
+				}
 			}
+			if authSpan != nil {
+				authSpan.End()
+			}
+
+			r = r.WithContext(ctx)
 			s.handleMCP(w, r)
 		})
 	}
@@ -126,7 +153,7 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 	}
 
 	if m != nil {
-		mux.Handle("GET /metrics", promhttp.Handler())
+		mux.Handle("GET /metrics", m.Handler())
 	}
 
 	s.httpServer = &http.Server{
@@ -163,6 +190,14 @@ const maxRequestBody = 10 << 20 // 10 MB
 const maxBatchSize = 100
 
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "handleMCP")
+		defer span.End()
+		r = r.WithContext(ctx)
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	if err != nil {
 		writeError(w, nil, jsonrpc.CodeParseError, "failed to read request body")
@@ -175,7 +210,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	requests, isBatch, err := jsonrpc.ParseMessage(body)
 	if err != nil {
-		slog.Warn("mcp parse error", "error", err, "body_prefix", truncate(string(body), 200))
+		slog.WarnContext(ctx, "mcp parse error", "error", err, "body_prefix", truncate(string(body), 200))
 		writeError(w, nil, jsonrpc.CodeParseError, err.Error())
 		return
 	}
@@ -186,7 +221,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, req := range requests {
-		slog.Info("mcp request", "method", req.Method, "id", req.ID)
+		slog.InfoContext(ctx, "mcp request", "method", req.Method, "id", req.ID)
 	}
 
 	if !isBatch && len(requests) == 1 {
@@ -231,7 +266,15 @@ func (s *Server) handleSingle(w http.ResponseWriter, r *http.Request, req *jsonr
 
 	// tools/call is special: it may stream SSE, so it writes directly to w.
 	if req.Method == "tools/call" {
-		s.proxy.HandleToolsCall(r.Context(), w, req)
+		ctx := r.Context()
+		if s.tracer != nil {
+			var span trace.Span
+			ctx, span = s.tracer.Start(ctx, "dispatch", trace.WithAttributes(
+				attribute.String("mcp.method", "tools/call"),
+			))
+			defer span.End()
+		}
+		s.proxy.HandleToolsCall(ctx, w, req)
 		return
 	}
 

@@ -86,6 +86,12 @@ rate_limits:
   default_tool: "10/sec"
   default_upstream: "500/min"
 
+telemetry:
+  traces:
+    enabled: true
+    endpoint: "jaeger:4318"
+    sample_rate: 1.0
+
 logging:
   level: "info"
   format: "json"

@@ -73,7 +73,26 @@ Any bucket empty -> error response with which level was hit.
 
 **g. Audit/metrics** — throughout step 6, the proxy records the caller, tool, upstream, status, and latency to structured logs, Prometheus counters/histograms, and the SQLite audit log.
 
-## 7. Return path
+## 7. Distributed tracing
+
+When tracing is enabled (`telemetry.traces.enabled: true`), the request path is instrumented with OpenTelemetry spans:
+
+```
+[handleMCP]                              <- root span per request
+  +- [auth]                              <- child span (auth middleware)
+  +- [dispatch]                          <- child span (method dispatch)
+  |    +- [route + rate limit]           <- child span (routing + rate limit check)
+  |    +- [upstream.RoundTrip]           <- child span (HTTP call or stdio write to upstream)
+  +- [StreamResult.WriteResponse]        <- child span if SSE (stream copy loop)
+```
+
+Key span attributes: `mcp.method`, `mcp.tool`, `mcp.upstream`, `mcp.caller`, `mcp.status`.
+
+The `StreamResult.WriteResponse` span is the critical one for SSE streams — if the stream dies mid-flight, the span records the error and duration.
+
+All structured log messages on the request path include `trace_id` and `span_id` fields for correlation.
+
+## 8. Return path
 
 The response flows back through the same HTTP connection to the agent. There's no post-processing middleware on the way out — auth is inbound only.
 

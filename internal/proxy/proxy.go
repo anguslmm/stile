@@ -10,6 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/anguslmm/stile/internal/audit"
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -25,16 +29,28 @@ type Handler struct {
 	rateLimiter atomic.Pointer[policy.RateLimiter]
 	metrics     *metrics.Metrics
 	auditStore  audit.Store
+	tracer      trace.Tracer
 }
 
 // NewHandler creates a Handler backed by the given RouteTable.
-// rateLimiter, m, and auditStore may be nil to disable their respective features.
-func NewHandler(rt *router.RouteTable, rateLimiter *policy.RateLimiter, m *metrics.Metrics, auditStore audit.Store) *Handler {
+// rateLimiter, m, auditStore, and tracer may be nil to disable their features.
+func NewHandler(rt *router.RouteTable, rateLimiter *policy.RateLimiter, m *metrics.Metrics, auditStore audit.Store, opts ...HandlerOption) *Handler {
 	h := &Handler{router: rt, metrics: m, auditStore: auditStore}
 	if rateLimiter != nil {
 		h.rateLimiter.Store(rateLimiter)
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
 	return h
+}
+
+// HandlerOption configures a Handler.
+type HandlerOption func(*Handler)
+
+// WithTracer sets the tracer for the proxy handler.
+func WithTracer(t trace.Tracer) HandlerOption {
+	return func(h *Handler) { h.tracer = t }
 }
 
 // SetRateLimiter atomically swaps the rate limiter.
@@ -104,19 +120,42 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	if caller != nil && !caller.CanAccessTool(params.Name) {
+		h.setSpanError(ctx, "access denied")
 		h.recordRequest(ctx, callerName, "tools/call", params.Name, "", "error", req.Params, start)
 		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, -32000, "access denied"))
 		return
 	}
 
+	// Route + rate limit span.
+	var routeCtx context.Context
+	var routeSpan trace.Span
+	if h.tracer != nil {
+		routeCtx, routeSpan = h.tracer.Start(ctx, "route + rate limit")
+	} else {
+		routeCtx = ctx
+	}
+
 	route, err := h.router.Resolve(params.Name)
 	if err != nil {
+		if routeSpan != nil {
+			routeSpan.SetStatus(codes.Error, "unknown tool")
+			routeSpan.End()
+		}
+		h.setSpanError(ctx, "unknown tool")
 		h.recordRequest(ctx, callerName, "tools/call", params.Name, "", "error", req.Params, start)
 		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInvalidParams, "unknown tool"))
 		return
 	}
 
 	upstreamName := route.Upstream.Name
+
+	if routeSpan != nil {
+		routeSpan.SetAttributes(
+			attribute.String("mcp.tool", params.Name),
+			attribute.String("mcp.upstream", upstreamName),
+			attribute.String("mcp.caller", callerName),
+		)
+	}
 
 	// Rate limit check.
 	rl := h.rateLimiter.Load()
@@ -125,15 +164,20 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 			rl.RegisterCaller(caller.Name, caller.Roles)
 		}
 		if ok, denial := rl.Allow(callerName, params.Name, upstreamName); !ok {
-			slog.Debug("rate limit rejected",
+			slog.DebugContext(ctx, "rate limit rejected",
 				"caller", callerName,
 				"tool", params.Name,
 				"upstream", upstreamName,
 				"level", denial.Level,
 			)
-			if h.metrics != nil {
-				h.metrics.RateLimitRejections.WithLabelValues(callerName, params.Name).Inc()
+			if routeSpan != nil {
+				routeSpan.SetStatus(codes.Error, "rate limited: "+denial.Level)
+				routeSpan.End()
 			}
+			if h.metrics != nil {
+				h.metrics.RecordRateLimitRejection(callerName, params.Name)
+			}
+			h.setSpanError(ctx, "rate limited")
 			h.recordRequest(ctx, callerName, "tools/call", params.Name, upstreamName, "error", req.Params, start)
 			data, _ := json.Marshal(map[string]string{"limit": denial.Level})
 			writeJSONResponse(w, jsonrpc.NewErrorResponseWithData(req.ID, -32000, "rate limit exceeded", data))
@@ -141,12 +185,49 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		}
 	}
 
-	result, err := route.Upstream.Transport.RoundTrip(ctx, req)
+	if routeSpan != nil {
+		routeSpan.End()
+	}
+
+	// Upstream round-trip span.
+	roundTripCtx := routeCtx
+	var rtSpan trace.Span
+	if h.tracer != nil {
+		roundTripCtx, rtSpan = h.tracer.Start(routeCtx, "upstream.RoundTrip", trace.WithAttributes(
+			attribute.String("mcp.upstream", upstreamName),
+		))
+	}
+
+	result, err := route.Upstream.Transport.RoundTrip(roundTripCtx, req)
+
+	if rtSpan != nil {
+		if err != nil {
+			rtSpan.SetStatus(codes.Error, err.Error())
+			rtSpan.RecordError(err)
+		}
+		rtSpan.End()
+	}
 
 	status := "ok"
 	if err != nil {
 		status = "error"
 	}
+
+	// Set span attributes on the parent dispatch span.
+	parentSpan := trace.SpanFromContext(ctx)
+	if parentSpan.SpanContext().IsValid() {
+		parentSpan.SetAttributes(
+			attribute.String("mcp.method", "tools/call"),
+			attribute.String("mcp.tool", params.Name),
+			attribute.String("mcp.upstream", upstreamName),
+			attribute.String("mcp.caller", callerName),
+			attribute.String("mcp.status", status),
+		)
+		if status == "error" {
+			parentSpan.SetStatus(codes.Error, "upstream error")
+		}
+	}
+
 	h.recordRequest(ctx, callerName, "tools/call", params.Name, upstreamName, status, req.Params, start)
 
 	if err != nil {
@@ -154,13 +235,21 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		return
 	}
 
-	result.WriteResponse(ctx, w)
+	result.WriteResponse(ctx, w, h.tracer)
+}
+
+// setSpanError marks the current span (if any) as errored.
+func (h *Handler) setSpanError(ctx context.Context, msg string) {
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		span.SetStatus(codes.Error, msg)
+	}
 }
 
 func (h *Handler) recordRequest(ctx context.Context, callerName, method, tool, upstream, status string, params json.RawMessage, start time.Time) {
 	latency := time.Since(start)
 
-	slog.Info("request handled",
+	slog.InfoContext(ctx, "request handled",
 		"caller", callerName,
 		"method", method,
 		"tool", tool,
@@ -170,8 +259,8 @@ func (h *Handler) recordRequest(ctx context.Context, callerName, method, tool, u
 	)
 
 	if h.metrics != nil {
-		h.metrics.RequestsTotal.WithLabelValues(callerName, tool, upstream, status).Inc()
-		h.metrics.RequestDuration.WithLabelValues(callerName, tool, upstream).Observe(latency.Seconds())
+		h.metrics.RecordRequest(callerName, tool, upstream, status)
+		h.metrics.RecordDuration(callerName, tool, upstream, latency.Seconds())
 	}
 
 	if h.auditStore != nil {

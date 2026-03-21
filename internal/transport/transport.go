@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
+
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -33,7 +36,8 @@ type TransportResult interface {
 
 	// WriteResponse writes the result to an HTTP response writer.
 	// For streaming results, it pipes events until EOF or client disconnect.
-	WriteResponse(ctx context.Context, w http.ResponseWriter)
+	// The optional tracer creates a span covering the write/stream duration.
+	WriteResponse(ctx context.Context, w http.ResponseWriter, tracer trace.Tracer)
 }
 
 // JSONResult is a TransportResult for non-streaming (application/json) responses.
@@ -50,7 +54,7 @@ func (r *JSONResult) Resolve() (*jsonrpc.Response, error) {
 	return r.response, nil
 }
 
-func (r *JSONResult) WriteResponse(_ context.Context, w http.ResponseWriter) {
+func (r *JSONResult) WriteResponse(_ context.Context, w http.ResponseWriter, _ trace.Tracer) {
 	data, err := json.Marshal(r.response)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -81,8 +85,15 @@ func (r *StreamResult) Resolve() (*jsonrpc.Response, error) {
 	return readFinalResponse(r.stream)
 }
 
-func (r *StreamResult) WriteResponse(ctx context.Context, w http.ResponseWriter) {
+func (r *StreamResult) WriteResponse(ctx context.Context, w http.ResponseWriter, tracer trace.Tracer) {
 	defer r.stream.Close()
+
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "StreamResult.WriteResponse")
+		defer span.End()
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -102,7 +113,12 @@ func (r *StreamResult) WriteResponse(ctx context.Context, w http.ResponseWriter)
 		}
 		if readErr != nil {
 			if readErr != io.EOF {
-				log.Printf("transport: stream read error: %v", readErr)
+				slog.ErrorContext(ctx, "stream read error", "error", readErr)
+				span := trace.SpanFromContext(ctx)
+				if span.SpanContext().IsValid() {
+					span.SetStatus(codes.Error, readErr.Error())
+					span.RecordError(readErr)
+				}
 			}
 			return
 		}

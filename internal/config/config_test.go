@@ -655,3 +655,107 @@ upstreams:
 		t.Fatal("expected error for invalid shutdown_timeout")
 	}
 }
+
+func TestTelemetryConfigDefaults(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Telemetry().Traces().Enabled() {
+		t.Error("tracing should be disabled by default")
+	}
+	if cfg.Telemetry().Metrics().Backend() != "prometheus" {
+		t.Errorf("metrics backend = %q, want prometheus", cfg.Telemetry().Metrics().Backend())
+	}
+}
+
+func TestTelemetryConfigExplicit(t *testing.T) {
+	yaml := `
+telemetry:
+  traces:
+    enabled: true
+    endpoint: "tempo:4318"
+    sample_rate: 0.5
+  metrics:
+    backend: prometheus
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Telemetry().Traces().Enabled() {
+		t.Error("tracing should be enabled")
+	}
+	if cfg.Telemetry().Traces().Endpoint() != "tempo:4318" {
+		t.Errorf("endpoint = %q, want tempo:4318", cfg.Telemetry().Traces().Endpoint())
+	}
+	if cfg.Telemetry().Traces().SampleRate() != 0.5 {
+		t.Errorf("sample_rate = %f, want 0.5", cfg.Telemetry().Traces().SampleRate())
+	}
+}
+
+func TestTelemetryInvalidSampleRate(t *testing.T) {
+	yaml := `
+telemetry:
+  traces:
+    sample_rate: 1.5
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for sample_rate > 1.0")
+	}
+}
+
+func TestTelemetryInvalidMetricsBackend(t *testing.T) {
+	yaml := `
+telemetry:
+  metrics:
+    backend: influx
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid metrics backend")
+	}
+}
+
+func TestTelemetryDefaultEndpoint(t *testing.T) {
+	yaml := `
+telemetry:
+  traces:
+    enabled: true
+    sample_rate: 1.0
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Telemetry().Traces().Endpoint() != "localhost:4318" {
+		t.Errorf("default endpoint = %q, want localhost:4318", cfg.Telemetry().Traces().Endpoint())
+	}
+}

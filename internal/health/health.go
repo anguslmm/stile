@@ -126,7 +126,7 @@ func (c *Checker) check() {
 			if c.health[u.Name] {
 				val = 1.0
 			}
-			c.metrics.UpstreamHealth.WithLabelValues(u.Name).Set(val)
+			c.metrics.SetUpstreamHealth(u.Name, val)
 		}
 	}
 }
