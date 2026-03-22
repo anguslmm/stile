@@ -8,23 +8,124 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/anguslmm/stile/internal/admin"
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 )
 
-func openStore(fs *flag.FlagSet, dbFlag, driverFlag, configFlag *string) (auth.Store, error) {
+// cliAdmin defines the operations that CLI commands need.
+// Both localAdmin (direct store access) and admin.Client (remote HTTP)
+// satisfy this interface.
+type cliAdmin interface {
+	AddCaller(name string) error
+	ListCallers() ([]auth.CallerInfo, error)
+	DeleteCaller(name string) error
+	KeyCountForCaller(name string) (int, error)
+	CreateKey(callerName, label string) (string, error)
+	ListKeys(callerName string) ([]auth.KeyInfo, error)
+	RevokeKey(callerName, label string) error
+	AssignRole(callerName, role string) error
+	UnassignRole(callerName, role string) error
+	Close() error
+}
+
+// Compile-time interface checks.
+var (
+	_ cliAdmin = (*localAdmin)(nil)
+	_ cliAdmin = (*admin.Client)(nil)
+)
+
+// localAdmin wraps auth.Store for local database access.
+type localAdmin struct {
+	store auth.Store
+}
+
+func (a *localAdmin) AddCaller(name string) error          { return a.store.AddCaller(name) }
+func (a *localAdmin) ListCallers() ([]auth.CallerInfo, error) { return a.store.ListCallers() }
+func (a *localAdmin) DeleteCaller(name string) error        { return a.store.DeleteCaller(name) }
+func (a *localAdmin) KeyCountForCaller(name string) (int, error) {
+	return a.store.KeyCountForCaller(name)
+}
+func (a *localAdmin) CreateKey(callerName, label string) (string, error) {
+	rawKey, err := auth.GenerateAPIKey()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256([]byte(rawKey))
+	if err := a.store.AddKey(callerName, hash, label); err != nil {
+		return "", err
+	}
+	return rawKey, nil
+}
+func (a *localAdmin) ListKeys(callerName string) ([]auth.KeyInfo, error) {
+	return a.store.ListKeys(callerName)
+}
+func (a *localAdmin) RevokeKey(callerName, label string) error {
+	return a.store.RevokeKey(callerName, label)
+}
+func (a *localAdmin) AssignRole(callerName, role string) error {
+	return a.store.AssignRole(callerName, role)
+}
+func (a *localAdmin) UnassignRole(callerName, role string) error {
+	return a.store.UnassignRole(callerName, role)
+}
+func (a *localAdmin) Close() error { return a.store.Close() }
+
+// cliFlags holds the shared flags for all CLI subcommands.
+type cliFlags struct {
+	db       *string
+	driver   *string
+	config   *string
+	remote   *string
+	adminKey *string
+}
+
+func addCLIFlags(fs *flag.FlagSet) *cliFlags {
+	return &cliFlags{
+		db:       fs.String("db", "", "database DSN (file path for sqlite, connection string for postgres)"),
+		driver:   fs.String("driver", "", "database driver: sqlite (default) or postgres"),
+		config:   fs.String("config", "", "path to config file"),
+		remote:   fs.String("remote", "", "base URL of remote Stile admin API"),
+		adminKey: fs.String("admin-key", "", "admin API key (or set STILE_ADMIN_KEY)"),
+	}
+}
+
+// openAdmin returns a cliAdmin backed by either a remote HTTP client
+// or a local database, depending on the flags.
+func openAdmin(flags *cliFlags) (cliAdmin, error) {
+	if *flags.remote != "" {
+		if *flags.db != "" {
+			return nil, fmt.Errorf("--remote and --db are mutually exclusive")
+		}
+		key := *flags.adminKey
+		if key == "" {
+			key = os.Getenv("STILE_ADMIN_KEY")
+		}
+		if key == "" {
+			return nil, fmt.Errorf("--admin-key or STILE_ADMIN_KEY is required with --remote")
+		}
+		return admin.NewClient(*flags.remote, key), nil
+	}
+	store, err := openStore(flags)
+	if err != nil {
+		return nil, err
+	}
+	return &localAdmin{store: store}, nil
+}
+
+func openStore(flags *cliFlags) (auth.Store, error) {
 	driver := "sqlite"
-	if *driverFlag != "" {
-		driver = *driverFlag
+	if *flags.driver != "" {
+		driver = *flags.driver
 	}
 
 	// 1. Explicit --dsn (or --db) flag.
-	if *dbFlag != "" {
-		return auth.OpenStore(config.NewDatabaseConfig(driver, *dbFlag))
+	if *flags.db != "" {
+		return auth.OpenStore(config.NewDatabaseConfig(driver, *flags.db))
 	}
 	// 2. --config flag → load config → server.database.
-	if *configFlag != "" {
-		cfg, err := config.Load(*configFlag)
+	if *flags.config != "" {
+		cfg, err := config.Load(*flags.config)
 		if err != nil {
 			return nil, fmt.Errorf("load config: %w", err)
 		}
@@ -37,17 +138,10 @@ func openStore(fs *flag.FlagSet, dbFlag, driverFlag, configFlag *string) (auth.S
 	return auth.OpenStore(config.NewDatabaseConfig(driver, "stile.db"))
 }
 
-func addCLIFlags(fs *flag.FlagSet) (db, driver, cfg *string) {
-	db = fs.String("db", "", "database DSN (file path for sqlite, connection string for postgres)")
-	driver = fs.String("driver", "", "database driver: sqlite (default) or postgres")
-	cfg = fs.String("config", "", "path to config file")
-	return db, driver, cfg
-}
-
 func runAddCaller(args []string) {
 	fs := flag.NewFlagSet("add-caller", flag.ExitOnError)
 	name := fs.String("name", "", "unique caller name (required)")
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *name == "" {
@@ -55,14 +149,14 @@ func runAddCaller(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
-	if err := store.AddCaller(*name); err != nil {
+	if err := adm.AddCaller(*name); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -73,7 +167,7 @@ func runAddKey(args []string) {
 	fs := flag.NewFlagSet("add-key", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	label := fs.String("label", "", "human-readable label for the key")
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" {
@@ -81,20 +175,15 @@ func runAddKey(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
-	rawKey, err := generateAPIKey()
+	rawKey, err := adm.CreateKey(*caller, *label)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	hash := sha256.Sum256([]byte(rawKey))
-	if err := store.AddKey(*caller, hash, *label); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -108,7 +197,7 @@ func runAssignRole(args []string) {
 	fs := flag.NewFlagSet("assign-role", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	role := fs.String("role", "", "role to assign (required)")
-	db, driver, cfgPath := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" || *role == "" {
@@ -116,9 +205,9 @@ func runAssignRole(args []string) {
 		os.Exit(1)
 	}
 
-	// If --config provided, validate role exists in config.
-	if *cfgPath != "" {
-		cfg, err := config.Load(*cfgPath)
+	// Config-based role validation (local mode only).
+	if *flags.config != "" && *flags.remote == "" {
+		cfg, err := config.Load(*flags.config)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: load config: %v\n", err)
 			os.Exit(1)
@@ -135,14 +224,14 @@ func runAssignRole(args []string) {
 		}
 	}
 
-	store, err := openStore(fs, db, driver, cfgPath)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
-	if err := store.AssignRole(*caller, *role); err != nil {
+	if err := adm.AssignRole(*caller, *role); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -153,7 +242,7 @@ func runUnassignRole(args []string) {
 	fs := flag.NewFlagSet("unassign-role", flag.ExitOnError)
 	caller := fs.String("caller", "", "name of existing caller (required)")
 	role := fs.String("role", "", "role to unassign (required)")
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" || *role == "" {
@@ -161,14 +250,14 @@ func runUnassignRole(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
-	if err := store.UnassignRole(*caller, *role); err != nil {
+	if err := adm.UnassignRole(*caller, *role); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -177,17 +266,17 @@ func runUnassignRole(args []string) {
 
 func runListCallers(args []string) {
 	fs := flag.NewFlagSet("list-callers", flag.ExitOnError)
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
-	callers, err := store.ListCallers()
+	callers, err := adm.ListCallers()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -211,7 +300,7 @@ func runRemoveCaller(args []string) {
 	fs := flag.NewFlagSet("remove-caller", flag.ExitOnError)
 	name := fs.String("name", "", "caller name to remove (required)")
 	force := fs.Bool("force", false, "force removal even if caller has active keys")
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *name == "" {
@@ -219,15 +308,15 @@ func runRemoveCaller(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
 	if !*force {
-		count, err := store.KeyCountForCaller(*name)
+		count, err := adm.KeyCountForCaller(*name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -238,7 +327,7 @@ func runRemoveCaller(args []string) {
 		}
 	}
 
-	if err := store.DeleteCaller(*name); err != nil {
+	if err := adm.DeleteCaller(*name); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -249,7 +338,7 @@ func runRevokeKey(args []string) {
 	fs := flag.NewFlagSet("revoke-key", flag.ExitOnError)
 	caller := fs.String("caller", "", "caller who owns the key (required)")
 	label := fs.String("label", "", "label of the key to revoke")
-	db, driver, cfg := addCLIFlags(fs)
+	flags := addCLIFlags(fs)
 	fs.Parse(args)
 
 	if *caller == "" {
@@ -257,16 +346,16 @@ func runRevokeKey(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore(fs, db, driver, cfg)
+	adm, err := openAdmin(flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer adm.Close()
 
 	// If no label given, list keys for the caller.
 	if *label == "" {
-		keys, err := store.ListKeys(*caller)
+		keys, err := adm.ListKeys(*caller)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -282,7 +371,7 @@ func runRevokeKey(args []string) {
 		os.Exit(0)
 	}
 
-	if err := store.RevokeKey(*caller, *label); err != nil {
+	if err := adm.RevokeKey(*caller, *label); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

@@ -1,6 +1,6 @@
 # Task 28 — Admin CLI remote mode (`--remote`)
 
-Status: **todo**
+Status: **done**
 
 ## Problem
 
