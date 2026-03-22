@@ -1,0 +1,53 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # Nightly at 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run microbenchmarks (current)
+        run: >
+          go test -run=^$ -bench=.
+          ./internal/jsonrpc/ ./internal/auth/ ./internal/router/
+          ./internal/policy/ ./internal/proxy/ ./benchmarks/
+          -benchmem -count=6 -benchtime=500ms
+          | tee /tmp/bench-new.txt
+
+      - name: Fetch baseline from main
+        run: |
+          git fetch origin main
+          git checkout origin/main -- . 2>/dev/null || true
+          go test -run=^$ -bench=. \
+            ./internal/jsonrpc/ ./internal/auth/ ./internal/router/ \
+            ./internal/policy/ ./internal/proxy/ ./benchmarks/ \
+            -benchmem -count=6 -benchtime=500ms \
+            | tee /tmp/bench-old.txt
+          git checkout - -- .
+
+      - name: Compare with benchstat
+        run: |
+          echo "## Benchmark Comparison (main vs current)"
+          benchstat /tmp/bench-old.txt /tmp/bench-new.txt || true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: /tmp/bench-new.txt
+          retention-days: 90

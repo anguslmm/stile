@@ -2,6 +2,7 @@ package jsonrpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -259,5 +260,67 @@ func TestErrorImplementsErrorInterface(t *testing.T) {
 	s := err.Error()
 	if s == "" {
 		t.Error("expected non-empty error string")
+	}
+}
+
+// --- Benchmarks ---
+
+func BenchmarkParseSingleRequest(b *testing.B) {
+	data := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"db_query","arguments":{"sql":"SELECT 1"}},"id":1}`)
+	b.ResetTimer()
+	for b.Loop() {
+		ParseMessage(data)
+	}
+}
+
+func BenchmarkParseBatch(b *testing.B) {
+	// Build a batch of 10 requests.
+	batch := []byte(`[`)
+	for i := range 10 {
+		if i > 0 {
+			batch = append(batch, ',')
+		}
+		batch = append(batch, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"tool_%d"},"id":%d}`, i, i+1))...)
+	}
+	batch = append(batch, ']')
+
+	b.ResetTimer()
+	for b.Loop() {
+		ParseMessage(batch)
+	}
+}
+
+func BenchmarkMarshalResponse(b *testing.B) {
+	result := map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": "Hello, world! This is a moderately sized response from an MCP tool."},
+		},
+	}
+	resp, _ := NewResponse(IntID(1), result)
+	b.ResetTimer()
+	for b.Loop() {
+		json.Marshal(resp)
+	}
+}
+
+func BenchmarkMarshalErrorResponse(b *testing.B) {
+	resp := NewErrorResponse(IntID(1), CodeInternalError, "something went wrong")
+	b.ResetTimer()
+	for b.Loop() {
+		json.Marshal(resp)
+	}
+}
+
+func BenchmarkRoundTripMarshalUnmarshal(b *testing.B) {
+	original := &Request{
+		JSONRPC: Version,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"test","arguments":{"key":"value"}}`),
+		ID:      IntID(42),
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		data, _ := json.Marshal(original)
+		ParseMessage(data)
 	}
 }

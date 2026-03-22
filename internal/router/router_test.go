@@ -577,6 +577,74 @@ func TestRemoveUpstream(t *testing.T) {
 	}
 }
 
+// --- Benchmarks ---
+
+func benchResolve(b *testing.B, numUpstreams, toolsPerUpstream int) {
+	b.Helper()
+	transports := make(map[string]transport.Transport)
+	names := make([]string, numUpstreams)
+	allToolNames := make([]string, 0, numUpstreams*toolsPerUpstream)
+
+	for i := range numUpstreams {
+		name := fmt.Sprintf("upstream-%d", i)
+		names[i] = name
+		tools := make([]transport.ToolSchema, toolsPerUpstream)
+		for j := range toolsPerUpstream {
+			toolName := fmt.Sprintf("tool_%d_%d", i, j)
+			tools[j] = transport.ToolSchema{Name: toolName}
+			allToolNames = append(allToolNames, toolName)
+		}
+		transports[name] = &mockTransport{tools: tools}
+	}
+
+	rt, err := New(transports, newConfigs(names...), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer rt.Close()
+
+	b.ResetTimer()
+	for b.Loop() {
+		rt.Resolve(allToolNames[b.N%len(allToolNames)])
+	}
+}
+
+func BenchmarkResolve5x10(b *testing.B) {
+	benchResolve(b, 5, 10) // 50 tools across 5 upstreams
+}
+
+func BenchmarkResolve10x50(b *testing.B) {
+	benchResolve(b, 10, 50) // 500 tools across 10 upstreams
+}
+
+func BenchmarkResolve50x20(b *testing.B) {
+	benchResolve(b, 50, 20) // 1000 tools across 50 upstreams
+}
+
+func BenchmarkListTools(b *testing.B) {
+	transports := make(map[string]transport.Transport)
+	names := make([]string, 10)
+	for i := range 10 {
+		name := fmt.Sprintf("upstream-%d", i)
+		names[i] = name
+		tools := make([]transport.ToolSchema, 20)
+		for j := range 20 {
+			tools[j] = transport.ToolSchema{Name: fmt.Sprintf("tool_%d_%d", i, j)}
+		}
+		transports[name] = &mockTransport{tools: tools}
+	}
+	rt, err := New(transports, newConfigs(names...), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer rt.Close()
+
+	b.ResetTimer()
+	for b.Loop() {
+		rt.ListTools()
+	}
+}
+
 // Test: RefreshResult JSON marshaling matches admin endpoint format
 func TestRefreshResultJSON(t *testing.T) {
 	mockA := &mockTransport{

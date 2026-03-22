@@ -346,6 +346,84 @@ rate_limits:
 	}
 }
 
+// --- Benchmarks ---
+
+func BenchmarkAllowNoLimits(b *testing.B) {
+	rl := localRateLimiterFromYAML(&testing.T{}, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+`)
+	b.ResetTimer()
+	for b.Loop() {
+		rl.Allow("alice", "tool-a", "svc", nil)
+	}
+}
+
+func benchAllow(b *testing.B, yaml string) {
+	cfg, err := config.LoadBytes([]byte(yaml))
+	if err != nil {
+		b.Fatal(err)
+	}
+	rl := NewLocalRateLimiter(cfg)
+	b.ResetTimer()
+	for b.Loop() {
+		rl.Allow(fmt.Sprintf("caller-%d", b.N%100), "tool-a", "svc", nil)
+	}
+}
+
+func BenchmarkAllowCallerLimit(b *testing.B) {
+	benchAllow(b, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_caller: 100000/sec
+  default_tool: 100000/sec
+`)
+}
+
+func BenchmarkAllowAllLimits(b *testing.B) {
+	benchAllow(b, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+    rate_limit: 100000/sec
+rate_limits:
+  default_caller: 100000/sec
+  default_tool: 100000/sec
+  default_upstream: 100000/sec
+`)
+}
+
+func BenchmarkAllowWithRoles(b *testing.B) {
+	cfg, err := config.LoadBytes([]byte(`
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+roles:
+  premium:
+    allowed_tools: ["*"]
+    rate_limit: 100000/sec
+    tool_rate_limit: 100000/sec
+rate_limits:
+  default_caller: 100000/sec
+  default_tool: 100000/sec
+`))
+	if err != nil {
+		b.Fatal(err)
+	}
+	rl := NewLocalRateLimiter(cfg)
+	b.ResetTimer()
+	for b.Loop() {
+		rl.Allow("premium-user", "tool-a", "svc", []string{"premium"})
+	}
+}
+
 func TestMostRestrictiveLimitReported(t *testing.T) {
 	rl := localRateLimiterFromYAML(t, `
 upstreams:

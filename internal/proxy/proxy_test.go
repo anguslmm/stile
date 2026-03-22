@@ -664,6 +664,103 @@ func TestNoRateLimitHeadersWithoutLimiter(t *testing.T) {
 	}
 }
 
+// --- Benchmarks ---
+
+func BenchmarkFullRoundTrip(b *testing.B) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "echo"}},
+		roundTrip: func(_ context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+			resp, _ := jsonrpc.NewResponse(req.ID, map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "ok"}},
+			})
+			return transport.NewJSONResult(resp), nil
+		},
+	}
+
+	cfg := newTestConfig("a")
+	rt, _ := router.New(map[string]transport.Transport{"a": mock}, cfg.Upstreams(), nil)
+	defer rt.Close()
+
+	h := NewHandler(rt, nil, nil, nil)
+
+	params, _ := json.Marshal(map[string]any{"name": "echo", "arguments": map[string]any{}})
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(1),
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		w := httptest.NewRecorder()
+		h.HandleToolsCall(context.Background(), w, req)
+	}
+}
+
+func BenchmarkFullRoundTripWithRateLimit(b *testing.B) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "echo"}},
+		roundTrip: func(_ context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
+			resp, _ := jsonrpc.NewResponse(req.ID, map[string]any{"ok": true})
+			return transport.NewJSONResult(resp), nil
+		},
+	}
+
+	cfg, _ := config.LoadBytes([]byte(`
+upstreams:
+  - name: a
+    transport: streamable-http
+    url: http://fake/a
+rate_limits:
+  default_caller: 10000000/sec
+  default_tool: 10000000/sec
+`))
+	rt, _ := router.New(map[string]transport.Transport{"a": mock}, cfg.Upstreams(), nil)
+	defer rt.Close()
+
+	rl := policy.NewLocalRateLimiter(cfg)
+	h := NewHandler(rt, rl, nil, nil)
+
+	params, _ := json.Marshal(map[string]any{"name": "echo", "arguments": map[string]any{}})
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(1),
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		w := httptest.NewRecorder()
+		h.HandleToolsCall(context.Background(), w, req)
+	}
+}
+
+func BenchmarkHandleToolsList(b *testing.B) {
+	transports := make(map[string]transport.Transport)
+	names := make([]string, 5)
+	for i := range 5 {
+		name := fmt.Sprintf("upstream-%d", i)
+		names[i] = name
+		tools := make([]transport.ToolSchema, 20)
+		for j := range 20 {
+			tools[j] = transport.ToolSchema{Name: fmt.Sprintf("tool_%d_%d", i, j)}
+		}
+		transports[name] = &mockTransport{tools: tools}
+	}
+
+	rt := newTestRouter(&testing.T{}, names, transports)
+	defer rt.Close()
+
+	h := NewHandler(rt, nil, nil, nil)
+
+	b.ResetTimer()
+	for b.Loop() {
+		h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
+	}
+}
+
 func TestNoRateLimitHeadersOnNonToolCall(t *testing.T) {
 	mockA := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "alpha"}},

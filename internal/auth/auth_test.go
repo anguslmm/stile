@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1070,4 +1071,65 @@ func TestCallerFromContextSet(t *testing.T) {
 	if got == nil || got.Name != "test" {
 		t.Error("expected caller from context")
 	}
+}
+
+// --- Benchmarks ---
+
+func benchAuthenticator(b *testing.B, numCallers int) {
+	b.Helper()
+	store := func() *SQLiteStore {
+		dbPath := filepath.Join(b.TempDir(), "bench.db")
+		s, err := NewSQLiteStore(dbPath)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return s
+	}()
+	b.Cleanup(func() { store.Close() })
+
+	cfg, _ := config.LoadBytes([]byte(`
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+roles:
+  admin:
+    allowed_tools: ["*"]
+    credentials: {}
+`))
+	roles := cfg.Roles()
+
+	// Pre-populate callers.
+	keys := make([]string, numCallers)
+	for i := range numCallers {
+		name := fmt.Sprintf("caller-%d", i)
+		store.AddCaller(name)
+		store.AssignRole(name, "admin")
+		keys[i] = fmt.Sprintf("sk-bench-key-%d", i)
+		hash := sha256.Sum256([]byte(keys[i]))
+		store.AddKey(name, hash, "")
+	}
+
+	auth := NewAuthenticator(store, roles)
+
+	b.ResetTimer()
+	for b.Loop() {
+		// Rotate through callers.
+		key := keys[b.N%numCallers]
+		req := httptest.NewRequest("POST", "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		auth.Authenticate(req)
+	}
+}
+
+func BenchmarkAuthenticate10Callers(b *testing.B) {
+	benchAuthenticator(b, 10)
+}
+
+func BenchmarkAuthenticate100Callers(b *testing.B) {
+	benchAuthenticator(b, 100)
+}
+
+func BenchmarkAuthenticate1000Callers(b *testing.B) {
+	benchAuthenticator(b, 1000)
 }
