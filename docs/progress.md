@@ -39,6 +39,9 @@ This document tracks the status of each implementation task. Agents should read 
 | 25 | Centralized health checks | [task-25.md](tasks/task-25.md) | todo |
 | 26 | TLS and mTLS support | [task-26.md](tasks/task-26.md) | todo |
 | 27 | `stile wrap` — stdio-to-HTTP adapter subcommand | [task-27.md](tasks/task-27.md) | todo |
+| 28 | Admin CLI remote mode (`--remote`) | [task-28.md](tasks/task-28.md) | todo |
+| 29 | In-memory cache for hot-path auth lookups | [task-29.md](tasks/task-29.md) | todo |
+| 30 | Audit: reconcile task docs with codebase | [task-30.md](tasks/task-30.md) | todo |
 
 ## Notes
 
