@@ -249,6 +249,21 @@ Auth lookups happen per-request but are keyed by the caller's API key hash. Conn
 - Use a connection pooler like PgBouncer between Stile and Postgres
 - Audit log writes are append-only and low-contention
 
+## Troubleshooting
+
+For common production failure scenarios and step-by-step remediation, see the [operational runbooks](runbooks/):
+
+| Runbook | When to use |
+|---------|-------------|
+| [upstream-unhealthy.md](runbooks/upstream-unhealthy.md) | Upstreams marked unhealthy, `/readyz` returning 503 |
+| [upstream-high-latency.md](runbooks/upstream-high-latency.md) | Slow upstream responses, timeouts |
+| [rate-limit-exhaustion.md](runbooks/rate-limit-exhaustion.md) | Callers unexpectedly hitting rate limits |
+| [database-connection-exhausted.md](runbooks/database-connection-exhausted.md) | Auth or audit DB connection errors |
+| [redis-unavailable.md](runbooks/redis-unavailable.md) | Redis down, all requests denied (fail-closed) |
+| [tls-certificate-expiry.md](runbooks/tls-certificate-expiry.md) | TLS certificate approaching or past expiry |
+| [high-memory-usage.md](runbooks/high-memory-usage.md) | Stile instances consuming excessive memory |
+| [config-change-failure.md](runbooks/config-change-failure.md) | Config changes not taking effect after deploy |
+
 ### Monitoring
 
 With multiple instances, aggregate metrics and logs:

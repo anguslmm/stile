@@ -318,6 +318,10 @@ Stile does not terminate TLS natively (this is planned — see task 26). In prod
 
 In all cases, Stile should listen on `127.0.0.1` or a private network interface — never bind to `0.0.0.0` without TLS in front.
 
+## Troubleshooting
+
+Operational runbooks for common production scenarios are in [docs/runbooks/](docs/runbooks/). Each runbook covers symptoms, diagnosis, and step-by-step remediation for issues like upstream failures, rate limit exhaustion, Redis outages, database connection problems, and more.
+
 ## Scaling
 
 Stile supports multi-instance deployment with Postgres and Redis for shared state. See [docs/horizontal-scaling.md](docs/horizontal-scaling.md) for the full guide.

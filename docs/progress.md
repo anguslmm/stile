@@ -35,7 +35,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 21 | Trace context propagation | [task-21.md](tasks/task-21.md) | done |
 | 22 | Rate limit response headers | [task-22.md](tasks/task-22.md) | done |
 | 23 | Load testing and performance benchmarks | [task-23.md](tasks/task-23.md) | done |
-| 24 | Operational runbooks | [task-24.md](tasks/task-24.md) | todo |
+| 24 | Operational runbooks | [task-24.md](tasks/task-24.md) | done |
 | 25 | Centralized health checks | [task-25.md](tasks/task-25.md) | todo |
 | 26 | TLS and mTLS support | [task-26.md](tasks/task-26.md) | todo |
 | 27 | `stile wrap` — stdio-to-HTTP adapter subcommand | [task-27.md](tasks/task-27.md) | todo |

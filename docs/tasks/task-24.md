@@ -1,6 +1,6 @@
 # Task 24: Operational Runbooks
 
-**Status:** todo
+**Status:** done
 **Depends on:** 16, 19, 20, 26
 
 ---
