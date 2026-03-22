@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/anguslmm/stile/internal/admin"
 	"github.com/anguslmm/stile/internal/audit"
@@ -49,6 +52,9 @@ func main() {
 			return
 		case "revoke-key":
 			runRevokeKey(os.Args[2:])
+			return
+		case "health-agent":
+			runHealthAgent(os.Args[2:])
 			return
 		}
 	}
@@ -116,7 +122,7 @@ func main() {
 	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore, proxy.WithTracer(tp.Tracer()))
 
 	// Build health checker from router upstreams.
-	healthChecker := buildHealthChecker(rt, m)
+	healthChecker, healthRedisClient := buildHealthChecker(cfg, rt, m)
 	healthChecker.Start()
 
 	if opts == nil {
@@ -162,7 +168,12 @@ func main() {
 			// 5. Close rate limiter (no-op for local, closes Redis connection for redis).
 			policy.CloseRateLimiter(rateLimiter)
 
-			// 6. Close audit log.
+			// 6. Close health Redis client if applicable.
+			if healthRedisClient != nil {
+				healthRedisClient.Close()
+			}
+
+			// 7. Close audit log.
 			if auditStore != nil {
 				auditStore.Close()
 			}
@@ -193,11 +204,69 @@ func buildTransports(cfg *config.Config, m *metrics.Metrics) (map[string]transpo
 	return transports, nil
 }
 
-func buildHealthChecker(rt *router.RouteTable, m *metrics.Metrics) *health.Checker {
-	return health.NewChecker(buildUpstreamInfos(rt), m)
+func buildHealthChecker(cfg *config.Config, rt *router.RouteTable, m *metrics.Metrics) (*health.Checker, *redis.Client) {
+	healthCfg := cfg.Health()
+	upstreamInfos := buildUpstreamInfos(rt, cfg.Upstreams())
+
+	if healthCfg.Store() == "redis" {
+		redisCfg := healthCfg.Redis()
+		client := redis.NewClient(&redis.Options{
+			Addr:     redisCfg.Address(),
+			Password: redisCfg.Password(),
+			DB:       redisCfg.DB(),
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Ping(ctx).Err(); err != nil {
+			slog.Error("health store redis connection failed", "error", err)
+			os.Exit(1)
+		}
+		store := health.NewRedisStore(client, redisCfg.KeyPrefix())
+		missingHealthy := healthCfg.MissingStatus() != "unhealthy"
+		checker := health.NewChecker(upstreamInfos, m,
+			health.WithStore(store),
+			health.WithReadFromStore(true),
+			health.WithMissingStatus(missingHealthy),
+			health.WithCheckInterval(healthCfg.CheckInterval()),
+		)
+		var local, remote int
+		for _, u := range upstreamInfos {
+			if u.Local {
+				local++
+			} else {
+				remote++
+			}
+		}
+		slog.Info("health checking configured",
+			"remote_upstreams", remote,
+			"remote_mode", "redis",
+			"local_upstreams", local,
+			"local_mode", "in-process (stdio)",
+			"redis", redisCfg.Address(),
+			"missing_status", healthCfg.MissingStatus(),
+			"check_interval", healthCfg.CheckInterval().String(),
+		)
+		return checker, client
+	}
+
+	checker := health.NewChecker(upstreamInfos, m,
+		health.WithCheckInterval(healthCfg.CheckInterval()),
+	)
+	slog.Info("health checking: local (in-process)",
+		"upstreams", len(upstreamInfos),
+		"check_interval", healthCfg.CheckInterval().String(),
+	)
+	return checker, nil
 }
 
-func buildUpstreamInfos(rt *router.RouteTable) []health.UpstreamInfo {
+func buildUpstreamInfos(rt *router.RouteTable, upstreamCfgs []config.UpstreamConfig) []health.UpstreamInfo {
+	stdioUpstreams := make(map[string]bool)
+	for _, ucfg := range upstreamCfgs {
+		if _, ok := ucfg.(*config.StdioUpstreamConfig); ok {
+			stdioUpstreams[ucfg.Name()] = true
+		}
+	}
+
 	upstreamDetails := rt.UpstreamDetails()
 	upstreamInfos := make([]health.UpstreamInfo, len(upstreamDetails))
 	for i, u := range upstreamDetails {
@@ -206,6 +275,7 @@ func buildUpstreamInfos(rt *router.RouteTable) []health.UpstreamInfo {
 			Transport: u.Transport,
 			Tools:     func() int { return len(u.Tools) },
 			Stale:     func() bool { return u.Stale },
+			Local:     stdioUpstreams[u.Name],
 		}
 	}
 	return upstreamInfos

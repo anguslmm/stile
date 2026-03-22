@@ -38,6 +38,5 @@ COPY --from=build /mock-sse-server /usr/local/bin/mock-sse-server
 RUN mkdir -p /workspace
 VOLUME ["/workspace"]
 
-# Start mock SSE server in background, then run Stile
-ENTRYPOINT ["sh", "-c", "mock-sse-server & exec stile \"$@\"", "--"]
+ENTRYPOINT ["stile"]
 CMD ["-config", "/etc/stile/config.yaml"]

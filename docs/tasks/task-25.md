@@ -1,6 +1,6 @@
 # Task 25: Centralized Health Checks
 
-**Status:** todo
+**Status:** done
 **Depends on:** 9, 18, 19
 
 ---

@@ -191,3 +191,177 @@ func TestUpstreamHealthTracking(t *testing.T) {
 		t.Fatal("expected ready after recovery")
 	}
 }
+
+func TestCheckerWritesToStore(t *testing.T) {
+	store := NewLocalStore()
+	mt := &mockTransport{healthy: true}
+	infos := []UpstreamInfo{
+		{Name: "srv", Transport: mt, Tools: func() int { return 1 }, Stale: func() bool { return false }},
+	}
+	c := NewChecker(infos, nil, WithStore(store))
+	c.CheckNow(context.Background())
+
+	// Store should have the health status.
+	st, err := store.Get(context.Background(), "srv")
+	if err != nil {
+		t.Fatalf("Get from store failed: %v", err)
+	}
+	if !st.Healthy {
+		t.Error("expected healthy=true in store")
+	}
+
+	// Mark unhealthy and check again.
+	mt.SetHealthy(false)
+	for i := 0; i < 3; i++ {
+		c.CheckNow(context.Background())
+	}
+
+	st, err = store.Get(context.Background(), "srv")
+	if err != nil {
+		t.Fatalf("Get from store failed: %v", err)
+	}
+	if st.Healthy {
+		t.Error("expected healthy=false in store after failures")
+	}
+}
+
+func TestCheckerReadsFromStore(t *testing.T) {
+	store := NewLocalStore()
+	mt := &mockTransport{healthy: false} // transport says unhealthy
+	infos := []UpstreamInfo{
+		{Name: "srv", Transport: mt, Tools: func() int { return 2 }, Stale: func() bool { return false }},
+	}
+	c := NewChecker(infos, nil,
+		WithStore(store),
+		WithReadFromStore(true),
+	)
+
+	// Store says healthy — checker should read from store, not transport.
+	store.Set(context.Background(), "srv", Status{Healthy: true}, 0)
+	c.CheckNow(context.Background())
+
+	if !c.IsReady() {
+		t.Fatal("expected ready when store says healthy (transport is unhealthy)")
+	}
+
+	// Store says unhealthy.
+	store.Set(context.Background(), "srv", Status{Healthy: false}, 0)
+	c.CheckNow(context.Background())
+
+	if c.IsReady() {
+		t.Fatal("expected not ready when store says unhealthy")
+	}
+}
+
+func TestCheckerMissingStatusDefault(t *testing.T) {
+	store := NewLocalStore() // empty store
+	mt := &mockTransport{healthy: false}
+	infos := []UpstreamInfo{
+		{Name: "srv", Transport: mt, Tools: func() int { return 0 }, Stale: func() bool { return false }},
+	}
+
+	// Default: missing = healthy (fail-open).
+	c := NewChecker(infos, nil,
+		WithStore(store),
+		WithReadFromStore(true),
+		WithMissingStatus(true),
+	)
+	c.CheckNow(context.Background())
+
+	if !c.IsReady() {
+		t.Fatal("expected ready when missing_status=healthy and store has no key")
+	}
+
+	// missing = unhealthy (fail-closed).
+	c2 := NewChecker(infos, nil,
+		WithStore(store),
+		WithReadFromStore(true),
+		WithMissingStatus(false),
+	)
+	c2.CheckNow(context.Background())
+
+	if c2.IsReady() {
+		t.Fatal("expected not ready when missing_status=unhealthy and store has no key")
+	}
+}
+
+func TestLocalUpstreamAlwaysPolledDirectly(t *testing.T) {
+	store := NewLocalStore()
+	localTransport := &mockTransport{healthy: true}
+	remoteTransport := &mockTransport{healthy: false}
+
+	infos := []UpstreamInfo{
+		{Name: "stdio-srv", Transport: localTransport, Tools: func() int { return 1 }, Stale: func() bool { return false }, Local: true},
+		{Name: "http-srv", Transport: remoteTransport, Tools: func() int { return 1 }, Stale: func() bool { return false }, Local: false},
+	}
+
+	// Store says http-srv is healthy; transport says it's not.
+	store.Set(context.Background(), "http-srv", Status{Healthy: true}, 0)
+
+	c := NewChecker(infos, nil,
+		WithStore(store),
+		WithReadFromStore(true),
+	)
+	c.CheckNow(context.Background())
+
+	statuses := c.UpstreamStatuses()
+
+	// Local upstream: should use transport (healthy=true), NOT store.
+	if !statuses["stdio-srv"].Healthy {
+		t.Error("expected stdio-srv healthy via direct transport poll")
+	}
+
+	// Remote upstream: should use store (healthy=true), not transport (healthy=false).
+	if !statuses["http-srv"].Healthy {
+		t.Error("expected http-srv healthy via store read")
+	}
+
+	// Verify local upstream does NOT write to store.
+	_, err := store.Get(context.Background(), "stdio-srv")
+	if err != ErrNotFound {
+		t.Errorf("expected local upstream NOT to be written to store, got err=%v", err)
+	}
+}
+
+func TestLocalUpstreamNotWrittenToStore(t *testing.T) {
+	store := NewLocalStore()
+	mt := &mockTransport{healthy: true}
+
+	infos := []UpstreamInfo{
+		{Name: "stdio-srv", Transport: mt, Tools: func() int { return 0 }, Stale: func() bool { return false }, Local: true},
+		{Name: "http-srv", Transport: mt, Tools: func() int { return 0 }, Stale: func() bool { return false }, Local: false},
+	}
+
+	// Active mode (health agent would use this): store set, readFromStore=false.
+	c := NewChecker(infos, nil, WithStore(store))
+	c.CheckNow(context.Background())
+
+	// Remote upstream should be written to store.
+	st, err := store.Get(context.Background(), "http-srv")
+	if err != nil {
+		t.Fatalf("expected http-srv in store, got %v", err)
+	}
+	if !st.Healthy {
+		t.Error("expected http-srv healthy in store")
+	}
+
+	// Local upstream should NOT be written to store.
+	_, err = store.Get(context.Background(), "stdio-srv")
+	if err != ErrNotFound {
+		t.Errorf("expected stdio-srv NOT in store, got err=%v", err)
+	}
+}
+
+func TestCheckerWithCheckInterval(t *testing.T) {
+	mt := &mockTransport{healthy: true}
+	infos := []UpstreamInfo{
+		{Name: "srv", Transport: mt, Tools: func() int { return 0 }, Stale: func() bool { return false }},
+	}
+	c := NewChecker(infos, nil, WithCheckInterval(5000000000)) // 5s in nanoseconds
+	if c.checkInterval != 5000000000 {
+		t.Errorf("expected checkInterval=5s, got %v", c.checkInterval)
+	}
+	if c.storeTTL != 10000000000 {
+		t.Errorf("expected storeTTL=10s (2x interval), got %v", c.storeTTL)
+	}
+}

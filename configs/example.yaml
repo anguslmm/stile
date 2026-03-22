@@ -39,7 +39,7 @@ upstreams:
   # Tools: lorem_stream
   - name: mock-sse
     transport: streamable-http
-    url: http://localhost:9090
+    url: http://mock-sse:9090
 
 roles:
   # Full access to all tools across all upstreams
@@ -87,6 +87,17 @@ rate_limits:
   default_caller: "60/min"
   default_tool: "10/sec"
   default_upstream: "500/min"
+
+# Centralized health checks: the gateway reads health status from Redis
+# instead of polling upstreams itself. Run `stile health-agent` as a sidecar
+# to poll upstreams and publish results. Set store to "local" (or omit the
+# health section entirely) to use the default in-process checking.
+health:
+  store: redis
+  check_interval: 10s
+  missing_status: healthy
+  redis:
+    address: redis:6379
 
 telemetry:
   traces:

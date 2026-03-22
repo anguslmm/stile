@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/metrics"
 	"github.com/anguslmm/stile/internal/transport"
 )
@@ -20,6 +21,7 @@ type UpstreamInfo struct {
 	Transport transport.Transport
 	Tools     func() int // returns current tool count
 	Stale     func() bool
+	Local     bool // true for stdio upstreams — always checked in-process, never via store
 }
 
 // UpstreamHealth is the health status of a single upstream.
@@ -35,6 +37,48 @@ type ReadinessResponse struct {
 	Upstreams map[string]UpstreamHealth `json:"upstreams"`
 }
 
+// CheckerOption configures a Checker.
+type CheckerOption func(*Checker)
+
+// WithStore sets a StatusStore for reading or writing health state.
+func WithStore(store StatusStore) CheckerOption {
+	return func(c *Checker) { c.store = store }
+}
+
+// WithReadFromStore makes the Checker read health from the store instead of
+// polling upstreams directly. This is used when an external health agent
+// writes results to the store.
+func WithReadFromStore(b bool) CheckerOption {
+	return func(c *Checker) { c.readFromStore = b }
+}
+
+// WithMissingStatus sets the default health assumption when a store lookup
+// fails or returns ErrNotFound. If true, missing upstreams are treated as
+// healthy (fail-open); if false, as unhealthy (fail-closed).
+func WithMissingStatus(healthy bool) CheckerOption {
+	return func(c *Checker) { c.missingStatus = healthy }
+}
+
+// WithCheckInterval overrides the health check interval (default 30s).
+func WithCheckInterval(d time.Duration) CheckerOption {
+	return func(c *Checker) { c.checkInterval = d }
+}
+
+// WithStoreTTL sets the TTL used when writing health status to the store.
+// Only relevant in active/write mode (health agent). Default: 2x check interval.
+func WithStoreTTL(d time.Duration) CheckerOption {
+	return func(c *Checker) { c.storeTTL = d }
+}
+
+// WithActiveProbe enables active health probing via RoundTrip instead of
+// passively calling Healthy(). This is required for the health agent, where
+// the transport's Healthy() only reflects outcomes of real requests — which
+// the agent never sends. The probe sends a JSON-RPC "ping" through the
+// transport to trigger recordSuccess/recordFailure.
+func WithActiveProbe(b bool) CheckerOption {
+	return func(c *Checker) { c.activeProbe = b }
+}
+
 // Checker periodically checks upstream health and serves health endpoints.
 type Checker struct {
 	mu               sync.RWMutex
@@ -46,19 +90,26 @@ type Checker struct {
 	failThreshold    int
 	consecutiveFails map[string]int
 
+	// Store-backed health checking.
+	store         StatusStore
+	readFromStore bool // true = read from store (passive/gateway mode)
+	missingStatus bool // default health when store returns ErrNotFound
+	storeTTL      time.Duration
+	activeProbe   bool // true = probe via RoundTrip instead of calling Healthy()
+
 	stopCh chan struct{}
 	done   chan struct{}
 }
 
 // NewChecker creates a Checker from the given upstreams. m may be nil.
-func NewChecker(upstreams []UpstreamInfo, m *metrics.Metrics) *Checker {
+func NewChecker(upstreams []UpstreamInfo, m *metrics.Metrics, opts ...CheckerOption) *Checker {
 	h := make(map[string]bool, len(upstreams))
 	fails := make(map[string]int, len(upstreams))
 	for _, u := range upstreams {
 		h[u.Name] = u.Transport.Healthy()
 		fails[u.Name] = 0
 	}
-	return &Checker{
+	c := &Checker{
 		upstreams:        upstreams,
 		health:           h,
 		metrics:          m,
@@ -66,9 +117,17 @@ func NewChecker(upstreams []UpstreamInfo, m *metrics.Metrics) *Checker {
 		checkInterval:    30 * time.Second,
 		failThreshold:    3,
 		consecutiveFails: fails,
+		missingStatus:    true, // fail-open by default
 		stopCh:           make(chan struct{}),
 		done:             make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.storeTTL == 0 {
+		c.storeTTL = 2 * c.checkInterval
+	}
+	return c
 }
 
 // Start begins periodic health checking in a background goroutine.
@@ -102,22 +161,66 @@ func (c *Checker) check() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, u := range c.upstreams {
-		healthy := u.Transport.Healthy()
+	var storeCtx context.Context
+	var cancel context.CancelFunc
+	if c.store != nil {
+		storeCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+	}
 
-		if healthy {
-			c.consecutiveFails[u.Name] = 0
-			c.health[u.Name] = true
-		} else {
-			c.consecutiveFails[u.Name]++
-			if c.consecutiveFails[u.Name] >= c.failThreshold {
-				if c.health[u.Name] {
-					slog.Warn("upstream marked unhealthy",
+	for _, u := range c.upstreams {
+		// Local (stdio) upstreams are always checked in-process. An external
+		// health agent cannot check a subprocess owned by this gateway instance.
+		// Remote (HTTP) upstreams use the store when configured.
+		useStore := !u.Local && c.store != nil && c.readFromStore
+
+		if useStore {
+			status, err := c.store.Get(storeCtx, u.Name)
+			if err != nil {
+				if c.health[u.Name] != c.missingStatus {
+					slog.Warn("health store lookup failed, using default",
 						"upstream", u.Name,
-						"consecutive_failures", c.consecutiveFails[u.Name],
+						"default_healthy", c.missingStatus,
+						"error", err,
 					)
 				}
-				c.health[u.Name] = false
+				c.health[u.Name] = c.missingStatus
+			} else {
+				c.health[u.Name] = status.Healthy
+			}
+		} else {
+			var healthy bool
+			if c.activeProbe {
+				healthy = c.probe(u.Transport)
+			} else {
+				healthy = u.Transport.Healthy()
+			}
+
+			if healthy {
+				c.consecutiveFails[u.Name] = 0
+				c.health[u.Name] = true
+			} else {
+				c.consecutiveFails[u.Name]++
+				if c.consecutiveFails[u.Name] >= c.failThreshold {
+					if c.health[u.Name] {
+						slog.Warn("upstream marked unhealthy",
+							"upstream", u.Name,
+							"consecutive_failures", c.consecutiveFails[u.Name],
+						)
+					}
+					c.health[u.Name] = false
+				}
+			}
+
+			// Write to store for remote upstreams in active mode (health agent).
+			if !u.Local && c.store != nil {
+				if err := c.store.Set(storeCtx, u.Name, Status{
+					Healthy:   c.health[u.Name],
+					CheckedAt: time.Now(),
+				}, c.storeTTL); err != nil {
+					slog.Error("failed to write health status to store",
+						"upstream", u.Name, "error", err)
+				}
 			}
 		}
 
@@ -129,6 +232,27 @@ func (c *Checker) check() {
 			c.metrics.SetUpstreamHealth(u.Name, val)
 		}
 	}
+}
+
+// probe sends a JSON-RPC "ping" request through the transport to actively
+// test upstream connectivity. The transport's recordSuccess/recordFailure
+// updates its Healthy() state as a side effect, but we return the direct
+// outcome of the probe.
+func (c *Checker) probe(t transport.Transport) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := &jsonrpc.Request{
+		JSONRPC: "2.0",
+		Method:  "ping",
+		ID:      jsonrpc.IntID(0),
+	}
+	result, err := t.RoundTrip(ctx, req)
+	if err != nil {
+		return false
+	}
+	// Resolve the result to ensure streaming responses are consumed.
+	result.Resolve()
+	return true
 }
 
 // UpdateUpstreams replaces the monitored upstream list. New upstreams

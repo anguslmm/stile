@@ -1,6 +1,6 @@
 # Full example: GitHub + Filesystem + Fetch (stdio) + mock SSE server (HTTP).
 # Uses Dockerfile.example which includes Node.js, Python, and the mock SSE server.
-# Postgres for caller store + audit log.
+# Postgres for caller store + audit log. Redis for centralized health checks.
 #
 # Usage:
 #   export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
@@ -8,6 +8,7 @@
 #   docker compose -f docker-compose.example.yml up --build
 #
 # Jaeger UI: http://localhost:16686
+# Health agent liveness: http://localhost:8081/healthz
 services:
   postgres:
     image: postgres:17-alpine
@@ -22,6 +23,23 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Mock SSE MCP server (HTTP upstream) — runs as its own service so both
+  # the gateway and health agent can reach it via Docker networking.
+  mock-sse:
+    build:
+      context: .
+      dockerfile: Dockerfile.example
+    entrypoint: ["mock-sse-server"]
+    command: []
 
   stile:
     build:
@@ -38,7 +56,32 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      mock-sse:
+        condition: service_started
       jaeger:
+        condition: service_started
+
+  # Centralized health agent — polls all upstreams once and publishes results
+  # to Redis. The gateway reads from Redis instead of each replica polling
+  # every upstream independently.
+  health-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.example
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./configs/example.yaml:/etc/stile/config.yaml:ro
+      - ${WORKSPACE_PATH:-.}:/workspace
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN
+    command: ["health-agent", "-config", "/etc/stile/config.yaml", "-listen", ":8081"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-sse:
         condition: service_started
 
   jaeger:

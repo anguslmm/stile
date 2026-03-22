@@ -231,6 +231,14 @@ type Config struct {
 	logging           loggingConfig
 	audit             auditConfig
 	telemetry         telemetryConfig
+	health            healthConfig
+}
+
+type healthConfig struct {
+	store         string
+	checkInterval time.Duration
+	missingStatus string
+	redis         *RedisConfig
 }
 
 type loggingConfig struct {
@@ -341,6 +349,16 @@ func (c *Config) Telemetry() TelemetryConfig {
 			endpoint:   c.telemetry.traces.endpoint,
 			sampleRate: c.telemetry.traces.sampleRate,
 		},
+	}
+}
+
+// Health returns the health check configuration.
+func (c *Config) Health() HealthConfig {
+	return HealthConfig{
+		store:         c.health.store,
+		checkInterval: c.health.checkInterval,
+		missingStatus: c.health.missingStatus,
+		redis:         c.health.redis,
 	}
 }
 
@@ -467,6 +485,27 @@ func (t TracesConfig) Endpoint() string { return t.endpoint }
 // SampleRate returns the trace sample rate (0.0 to 1.0).
 func (t TracesConfig) SampleRate() float64 { return t.sampleRate }
 
+// HealthConfig provides read-only access to health check settings.
+type HealthConfig struct {
+	store         string
+	checkInterval time.Duration
+	missingStatus string
+	redis         *RedisConfig
+}
+
+// Store returns the health store backend ("local" or "redis"). Default: "local".
+func (h HealthConfig) Store() string { return h.store }
+
+// CheckInterval returns the health check interval. Default: 30s.
+func (h HealthConfig) CheckInterval() time.Duration { return h.checkInterval }
+
+// MissingStatus returns the default health assumption when a store key is
+// missing or expired ("healthy" or "unhealthy"). Default: "healthy".
+func (h HealthConfig) MissingStatus() string { return h.missingStatus }
+
+// Redis returns the Redis configuration for health checking, or nil if unset.
+func (h HealthConfig) Redis() *RedisConfig { return h.redis }
+
 type serverConfig struct {
 	address         string
 	toolCacheTTL    time.Duration
@@ -564,6 +603,13 @@ type rawTracesConfig struct {
 	SampleRate float64 `yaml:"sample_rate"`
 }
 
+type rawHealthConfig struct {
+	Store         string          `yaml:"store"`
+	CheckInterval string          `yaml:"check_interval"`
+	MissingStatus string          `yaml:"missing_status"`
+	Redis         *rawRedisConfig `yaml:"redis"`
+}
+
 type rawConfig struct {
 	Server     rawServerConfig          `yaml:"server"`
 	Upstreams  []rawUpstreamConfig      `yaml:"upstreams"`
@@ -572,6 +618,7 @@ type rawConfig struct {
 	Logging    *rawLoggingConfig        `yaml:"logging"`
 	Audit      *rawAuditConfig          `yaml:"audit"`
 	Telemetry  *rawTelemetryConfig      `yaml:"telemetry"`
+	Health     *rawHealthConfig         `yaml:"health"`
 
 	// rolesOrdered preserves YAML key order for roles.
 	// Populated by Load/LoadBytes before convert is called.
@@ -956,6 +1003,48 @@ func convert(raw rawConfig) (*Config, error) {
 		}
 	}
 
+	// Parse health config with defaults.
+	cfg.health.store = "local"
+	cfg.health.checkInterval = 30 * time.Second
+	cfg.health.missingStatus = "healthy"
+	if raw.Health != nil {
+		if raw.Health.Store != "" {
+			cfg.health.store = raw.Health.Store
+		}
+		if raw.Health.CheckInterval != "" {
+			d, err := time.ParseDuration(raw.Health.CheckInterval)
+			if err != nil {
+				return nil, fmt.Errorf("config: invalid health.check_interval %q: %w", raw.Health.CheckInterval, err)
+			}
+			if d <= 0 {
+				return nil, fmt.Errorf("config: health.check_interval must be positive")
+			}
+			cfg.health.checkInterval = d
+		}
+		if raw.Health.MissingStatus != "" {
+			cfg.health.missingStatus = raw.Health.MissingStatus
+		}
+		if raw.Health.Redis != nil {
+			keyPrefix := raw.Health.Redis.KeyPrefix
+			if keyPrefix == "" {
+				keyPrefix = "stile:"
+			}
+			cfg.health.redis = &RedisConfig{
+				address:   raw.Health.Redis.Address,
+				password:  raw.Health.Redis.Password,
+				db:        raw.Health.Redis.DB,
+				keyPrefix: keyPrefix,
+			}
+		}
+	}
+	// Resolve Redis config for health: fall back to rate_limits.redis.
+	if cfg.health.store == "redis" && cfg.health.redis == nil {
+		cfg.health.redis = cfg.rateLimitDefaults.redis
+	}
+	if cfg.health.store == "redis" && cfg.health.redis == nil {
+		return nil, fmt.Errorf("config: health.store is \"redis\" but no redis config found (set health.redis or rate_limits.redis)")
+	}
+
 	return cfg, nil
 }
 
@@ -1043,6 +1132,19 @@ func validate(raw rawConfig) error {
 			if raw.RateLimits.Redis == nil || raw.RateLimits.Redis.Address == "" {
 				return fmt.Errorf("config: rate_limits.redis.address is required when backend is \"redis\"")
 			}
+		}
+	}
+
+	if raw.Health != nil {
+		switch raw.Health.Store {
+		case "", "local", "redis":
+		default:
+			return fmt.Errorf("config: health.store must be \"local\" or \"redis\", got %q", raw.Health.Store)
+		}
+		switch raw.Health.MissingStatus {
+		case "", "healthy", "unhealthy":
+		default:
+			return fmt.Errorf("config: health.missing_status must be \"healthy\" or \"unhealthy\", got %q", raw.Health.MissingStatus)
 		}
 	}
 
