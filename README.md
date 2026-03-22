@@ -238,6 +238,25 @@ Available at `GET /metrics`:
 
 When enabled, every `tools/call` is logged to a SQLite database with: timestamp, caller, method, tool, upstream, params, status, and latency.
 
+## `stile wrap` — Stdio-to-HTTP Adapter
+
+Expose any stdio MCP server as a Streamable HTTP endpoint:
+
+```bash
+stile wrap --command "npx -y @modelcontextprotocol/server-github" --port 9090
+```
+
+Agents or other Stile instances connect to `http://host:9090/mcp`. The wrapper translates between HTTP and stdio JSON-RPC.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--command` | yes | — | Command to run |
+| `--port` | no | `9090` | Listen port |
+| `--address` | no | `:9090` | Full listen address (overrides `--port`) |
+| `--env` | no | — | Extra env vars for the child (`KEY=VALUE`, repeatable) |
+
+This is the recommended approach for deploying stdio MCP servers in a [multi-instance setup](docs/horizontal-scaling.md). Each stdio server runs once as a wrapped service, and all Stile instances connect to it via HTTP.
+
 ## Deployment
 
 ### Docker
@@ -368,6 +387,7 @@ internal/
   audit/             Append-only audit log (SQLite)
   metrics/           Prometheus metrics (OTel API + Prometheus exporter)
   telemetry/         OpenTelemetry tracer provider setup
+  wrap/              stile wrap: stdio-to-HTTP adapter
   logging/           slog trace-correlation handler
 tests/integration/   End-to-end integration tests
 configs/             Example config files

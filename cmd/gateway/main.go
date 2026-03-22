@@ -56,6 +56,9 @@ func main() {
 		case "health-agent":
 			runHealthAgent(os.Args[2:])
 			return
+		case "wrap":
+			runWrap(os.Args[2:])
+			return
 		}
 	}
 

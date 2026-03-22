@@ -1,0 +1,129 @@
+# Multi-instance Stile deployment with stile wrap for stdio servers.
+#
+# Architecture:
+#   nginx (port 8080)
+#     ├── stile-1 (:8081) ──┐
+#     └── stile-2 (:8082) ──┤── github-wrapper (:9090) [stile wrap]
+#                            ├── fetch-wrapper  (:9091) [stile wrap]
+#                            ├── postgres (:5432)
+#                            └── redis (:6379)
+#
+# Usage:
+#   export GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)"
+#   export ADMIN_API_KEY="pick-a-secret"
+#   docker compose -f docker-compose.scaling.yml up --build
+#
+# Jaeger UI: http://localhost:16686
+
+services:
+  # --- Load balancer ---
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/nginx-scaling.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      stile-1:
+        condition: service_started
+      stile-2:
+        condition: service_started
+
+  # --- Stile instances (identical config, HTTP upstreams only) ---
+  stile-1:
+    build: .
+    volumes:
+      - ./configs/scaling.yaml:/etc/stile/config.yaml:ro
+    environment:
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    command: ["-config", "/etc/stile/config.yaml"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      github-wrapper:
+        condition: service_started
+      fetch-wrapper:
+        condition: service_started
+      jaeger:
+        condition: service_started
+
+  stile-2:
+    build: .
+    volumes:
+      - ./configs/scaling.yaml:/etc/stile/config.yaml:ro
+    environment:
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    command: ["-config", "/etc/stile/config.yaml"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      github-wrapper:
+        condition: service_started
+      fetch-wrapper:
+        condition: service_started
+      jaeger:
+        condition: service_started
+
+  # --- Wrapped stdio MCP servers (one instance each) ---
+  # These use Dockerfile.example which includes Node.js and Python runtimes
+  # needed by the stdio MCP servers.
+  github-wrapper:
+    build:
+      context: .
+      dockerfile: Dockerfile.example
+    command:
+      - wrap
+      - --command
+      - "npx -y @modelcontextprotocol/server-github"
+      - --port
+      - "9090"
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+
+  fetch-wrapper:
+    build:
+      context: .
+      dockerfile: Dockerfile.example
+    command:
+      - wrap
+      - --command
+      - "mcp-server-fetch"
+      - --port
+      - "9091"
+
+  # --- Observability ---
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver
+
+  # --- Shared infrastructure ---
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: stile
+      POSTGRES_USER: stile
+      POSTGRES_PASSWORD: stile
+    volumes:
+      - scaling-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stile"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  scaling-pgdata:

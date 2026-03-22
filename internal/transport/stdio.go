@@ -172,36 +172,64 @@ func (t *StdioTransport) RoundTrip(_ context.Context, req *jsonrpc.Request) (Tra
 		}
 	}
 
-	// Read one line of response.
-	if !t.stdout.Scan() {
-		scanErr := t.stdout.Err()
+	// Notifications don't expect a response — just write and return.
+	if req.IsNotification() {
+		return NewJSONResult(&jsonrpc.Response{JSONRPC: jsonrpc.Version}), nil
+	}
+
+	// Read lines until we get a valid JSON-RPC response.
+	// Some servers write non-JSON output (logs, tracebacks) to stdout;
+	// skip those lines rather than failing.
+	resp, err := t.readJSONResponse()
+	if err != nil {
 		// Process may have died. Try restart once and resend.
 		if restartErr := t.restartWithBackoff(); restartErr != nil {
-			if scanErr != nil {
-				return nil, fmt.Errorf("transport/stdio: read response: %w", scanErr)
-			}
-			return nil, fmt.Errorf("transport/stdio: unexpected EOF from process")
+			return nil, fmt.Errorf("transport/stdio: read response and restart failed: %w", err)
 		}
-		// Resend after restart.
 		if err := t.stdin.Encode(req); err != nil {
 			return nil, fmt.Errorf("transport/stdio: write request after restart: %w", err)
 		}
-		if !t.stdout.Scan() {
-			if err := t.stdout.Err(); err != nil {
-				return nil, fmt.Errorf("transport/stdio: read response after restart: %w", err)
-			}
-			return nil, fmt.Errorf("transport/stdio: unexpected EOF from process after restart")
+		resp, err = t.readJSONResponse()
+		if err != nil {
+			return nil, fmt.Errorf("transport/stdio: read response after restart: %w", err)
 		}
 	}
 
-	line := t.stdout.Bytes()
-	var resp jsonrpc.Response
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return nil, fmt.Errorf("transport/stdio: unmarshal response: %w", err)
-	}
-
 	t.ResetBackoff()
-	return NewJSONResult(&resp), nil
+	return NewJSONResult(resp), nil
+}
+
+// readJSONResponse reads lines from stdout until it finds a valid JSON-RPC
+// response, skipping non-JSON lines (logs, tracebacks). Must be called with mu held.
+func (t *StdioTransport) readJSONResponse() (*jsonrpc.Response, error) {
+	const maxSkip = 50 // don't skip forever
+	for skipped := 0; skipped < maxSkip; skipped++ {
+		if !t.stdout.Scan() {
+			if err := t.stdout.Err(); err != nil {
+				return nil, fmt.Errorf("transport/stdio: read response: %w", err)
+			}
+			return nil, fmt.Errorf("transport/stdio: unexpected EOF from process")
+		}
+		line := t.stdout.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var resp jsonrpc.Response
+		if err := json.Unmarshal(line, &resp); err != nil {
+			slog.Warn("skipping non-JSON line from upstream stdout",
+				"upstream", t.name, "line", truncateBytes(line, 200))
+			continue
+		}
+		return &resp, nil
+	}
+	return nil, fmt.Errorf("transport/stdio: no JSON response after %d lines", maxSkip)
+}
+
+func truncateBytes(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
 }
 
 // restartWithBackoff kills the current process and starts a new one,

@@ -49,9 +49,16 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("audit: ping postgres: %w", err)
 	}
 
-	if _, err := db.Exec(pgSchema); err != nil {
+	// Use an advisory lock to prevent concurrent migration attempts.
+	if _, err := db.Exec("SELECT pg_advisory_lock(43)"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("audit: run migrations: %w", err)
+		return nil, fmt.Errorf("audit: acquire migration lock: %w", err)
+	}
+	_, migErr := db.Exec(pgSchema)
+	db.Exec("SELECT pg_advisory_unlock(43)")
+	if migErr != nil {
+		db.Close()
+		return nil, fmt.Errorf("audit: run migrations: %w", migErr)
 	}
 
 	return &PostgresStore{db: db}, nil

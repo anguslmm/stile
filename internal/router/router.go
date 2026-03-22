@@ -319,6 +319,16 @@ func discoverTools(ctx context.Context, t transport.Transport) ([]transport.Tool
 		slog.Debug("initialize failed (non-fatal)", "error", err)
 	} else if initResp.Error != nil {
 		slog.Debug("initialize returned error (non-fatal)", "error", initResp.Error.Message)
+	} else {
+		// MCP spec: client must send notifications/initialized after
+		// a successful initialize. Some servers (Python SDK) require this
+		// before they accept any other requests.
+		notif := &jsonrpc.Request{
+			JSONRPC: jsonrpc.Version,
+			Method:  "notifications/initialized",
+			// No ID — this is a notification.
+		}
+		transport.Send(ctx, t, notif)
 	}
 
 	req := &jsonrpc.Request{

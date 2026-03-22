@@ -1,6 +1,6 @@
 # Task 27: `stile wrap` — Stdio-to-HTTP Adapter Subcommand
 
-**Status:** todo
+**Status:** done
 **Depends on:** 4, 19
 
 ---

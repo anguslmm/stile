@@ -113,24 +113,17 @@ HTTP and stdio upstreams behave very differently in a multi-instance deployment:
 
 **Recommendation:** For production multi-instance deployments, use HTTP upstreams exclusively. Convert stdio servers to HTTP using a wrapper.
 
-### Wrapping stdio servers as HTTP
+### Wrapping stdio servers with `stile wrap`
 
-If you have a stdio MCP server that needs to be shared across instances, run it behind a thin HTTP adapter as a standalone service or sidecar:
+Use `stile wrap` to expose any stdio MCP server as a Streamable HTTP endpoint. This eliminates the need for third-party wrappers:
 
 ```
-stdio MCP server --> HTTP wrapper (runs once) --> Stile instances connect via HTTP
+stdio MCP server --> stile wrap (runs once) --> Stile instances connect via HTTP
 ```
-
-Community tools that do this:
-
-- **[supergateway](https://github.com/supercorp-ai/supergateway)** — wraps any stdio MCP server as a Streamable HTTP server
-- **[mcp-proxy](https://github.com/sparfenyuk/mcp-proxy)** — bidirectional proxy between stdio and SSE/Streamable HTTP
-
-Example: wrapping a stdio server with supergateway and pointing Stile at it:
 
 ```bash
 # Run the wrapper (once, as a service)
-npx -y supergateway --stdio "npx -y @modelcontextprotocol/server-github" --port 9090
+stile wrap --command "npx -y @modelcontextprotocol/server-github" --port 9090
 ```
 
 ```yaml
@@ -138,8 +131,21 @@ npx -y supergateway --stdio "npx -y @modelcontextprotocol/server-github" --port 
 upstreams:
   - name: github
     transport: streamable-http
-    url: http://github-wrapper.internal:9090
+    url: http://github-wrapper.internal:9090/mcp
 ```
+
+The wrapper provides:
+- **`POST /mcp`** — JSON-RPC endpoint (single and batch requests)
+- **`GET /healthz`** — health check for the child process
+
+Multiple `stile wrap` instances can run side by side, one per stdio server:
+
+```bash
+stile wrap --command "npx -y @modelcontextprotocol/server-github" --port 9090
+stile wrap --command "uvx mcp-server-fetch" --port 9091
+```
+
+See `docker-compose.scaling.yml` and `configs/scaling.yaml` for a complete multi-instance example with nginx, Postgres, Redis, and wrapped stdio servers.
 
 ## Load Balancer Configuration
 

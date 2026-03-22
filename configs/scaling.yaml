@@ -1,0 +1,58 @@
+# Stile scaling config — all instances share this config.
+# Stdio MCP servers are wrapped as HTTP services via `stile wrap`.
+
+server:
+  address: ":8080"
+  database:
+    driver: postgres
+    dsn: "postgres://stile:stile@postgres:5432/stile?sslmode=disable"
+  tool_cache_ttl: "5m"
+  shutdown_timeout: "30s"
+
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: http://github-wrapper:9090/mcp
+    rate_limit: "2000/min"
+
+  - name: fetch
+    transport: streamable-http
+    url: http://fetch-wrapper:9091/mcp
+    rate_limit: "1000/min"
+
+roles:
+  agent:
+    allowed_tools: ["*"]
+    rate_limit: "200/min"
+    tool_rate_limit: "30/sec"
+
+rate_limits:
+  backend: redis
+  redis:
+    address: "redis:6379"
+    key_prefix: "stile:"
+  default_caller: "100/min"
+  default_tool: "20/sec"
+  default_upstream: "1000/min"
+
+health:
+  store: redis
+  redis:
+    address: "redis:6379"
+    key_prefix: "stile:health:"
+  check_interval: "30s"
+
+logging:
+  level: "info"
+  format: "json"
+
+telemetry:
+  traces:
+    enabled: true
+    endpoint: "jaeger:4318"
+    sample_rate: 1.0
+
+audit:
+  enabled: true
+  driver: postgres
+  database: "postgres://stile:stile@postgres:5432/stile?sslmode=disable"

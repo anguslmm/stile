@@ -58,9 +58,18 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("auth: ping postgres: %w", err)
 	}
 
-	if _, err := db.Exec(pgSchema); err != nil {
+	// Use an advisory lock to prevent concurrent migration attempts.
+	// Multiple Stile instances starting simultaneously can race on
+	// CREATE TABLE IF NOT EXISTS with SERIAL columns (Postgres bug).
+	if _, err := db.Exec("SELECT pg_advisory_lock(42)"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("auth: run migrations: %w", err)
+		return nil, fmt.Errorf("auth: acquire migration lock: %w", err)
+	}
+	_, migErr := db.Exec(pgSchema)
+	db.Exec("SELECT pg_advisory_unlock(42)") // best-effort release
+	if migErr != nil {
+		db.Close()
+		return nil, fmt.Errorf("auth: run migrations: %w", migErr)
 	}
 
 	return &PostgresStore{db: db}, nil

@@ -259,6 +259,24 @@ func (s *StdioUpstreamConfig) CircuitBreaker() *CircuitBreakerConfig { return s.
 // Retry returns the retry config, or nil if not set.
 func (s *StdioUpstreamConfig) Retry() *RetryConfig { return s.retry }
 
+// NewStdioUpstreamConfig creates a StdioUpstreamConfig programmatically.
+func NewStdioUpstreamConfig(name string, command []string, env map[string]string) *StdioUpstreamConfig {
+	s := &StdioUpstreamConfig{
+		name: name,
+	}
+	if command != nil {
+		s.command = make([]string, len(command))
+		copy(s.command, command)
+	}
+	if env != nil {
+		s.env = make(map[string]string, len(env))
+		for k, v := range env {
+			s.env[k] = v
+		}
+	}
+	return s
+}
+
 // Compile-time interface satisfaction checks.
 var (
 	_ UpstreamConfig = (*HTTPUpstreamConfig)(nil)
