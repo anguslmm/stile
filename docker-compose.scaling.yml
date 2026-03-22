@@ -81,8 +81,13 @@ services:
       - "npx -y @modelcontextprotocol/server-github"
       - --port
       - "9090"
+      - --otel-endpoint
+      - "jaeger:4318"
     environment:
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+    depends_on:
+      jaeger:
+        condition: service_started
 
   fetch-wrapper:
     build:
@@ -94,6 +99,11 @@ services:
       - "mcp-server-fetch"
       - --port
       - "9091"
+      - --otel-endpoint
+      - "jaeger:4318"
+    depends_on:
+      jaeger:
+        condition: service_started
 
   # --- Observability ---
   jaeger:

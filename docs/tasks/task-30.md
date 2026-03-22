@@ -57,5 +57,6 @@ For each task:
 - [ ] Task 25 — Centralized health checks
 - [ ] Task 26 — TLS and mTLS support
 - [ ] Task 27 — `stile wrap` — stdio-to-HTTP adapter subcommand
+- [ ] Task 27.1 — Add OpenTelemetry tracing to `stile wrap`
 - [ ] Task 28 — Admin CLI remote mode (`--remote`)
 - [ ] Task 29 — In-memory cache for hot-path auth lookups

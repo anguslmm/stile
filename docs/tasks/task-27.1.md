@@ -1,6 +1,6 @@
 # Task 27.1: Add OpenTelemetry tracing to `stile wrap`
 
-**Status:** todo
+**Status:** done
 **Depends on:** 27
 
 ---

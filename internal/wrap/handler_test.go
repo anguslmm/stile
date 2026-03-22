@@ -1,12 +1,18 @@
 package wrap
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -211,5 +217,67 @@ func TestWrapBodyTooLarge(t *testing.T) {
 	}
 	if resp.Error == nil {
 		t.Fatal("expected error response for oversized body")
+	}
+}
+
+func TestWrapTracePropagation(t *testing.T) {
+	// Set up an in-memory span exporter so we can inspect recorded spans.
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { tp.Shutdown(context.Background()) })
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	tracer := tp.Tracer("test")
+
+	cfg := config.NewStdioUpstreamConfig("echo-test", []string{"python3", "-c", echoServer}, nil)
+	tr, err := transport.NewStdioTransport(cfg)
+	if err != nil {
+		t.Fatalf("create transport: %v", err)
+	}
+	t.Cleanup(func() { tr.Close() })
+
+	h := NewHandler(tr, WithTracer(tracer))
+	mux := h.ServeMux()
+
+	// Create a parent span and inject its trace context into the HTTP request.
+	parentCtx, parentSpan := tracer.Start(context.Background(), "test.parent")
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"ping","id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	otel.GetTextMapPropagator().Inject(parentCtx, propagatorCarrier(req.Header))
+	parentSpan.End()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	spans := exporter.GetSpans()
+
+	// Expect: test.parent, wrap.handleMCP, wrap.forward
+	if len(spans) < 3 {
+		t.Fatalf("expected at least 3 spans, got %d", len(spans))
+	}
+
+	// All spans should share the same trace ID.
+	traceID := spans[0].SpanContext.TraceID()
+	for _, s := range spans {
+		if s.SpanContext.TraceID() != traceID {
+			t.Errorf("span %q has trace ID %s, expected %s", s.Name, s.SpanContext.TraceID(), traceID)
+		}
+	}
+
+	// Check that wrap.handleMCP and wrap.forward spans exist.
+	names := make(map[string]bool)
+	for _, s := range spans {
+		names[s.Name] = true
+	}
+	for _, want := range []string{"wrap.handleMCP", "wrap.forward"} {
+		if !names[want] {
+			t.Errorf("missing expected span %q; got spans: %v", want, names)
+		}
 	}
 }
