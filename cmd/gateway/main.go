@@ -183,7 +183,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("stile listening", "address", cfg.Server().Address())
+	slog.Info("stile listening", "address", cfg.Server().Address(), "tls", srv.TLSEnabled())
 	if err := srv.ListenAndServe(); err != nil {
 		slog.Info("server stopped", "error", err)
 	}

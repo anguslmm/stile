@@ -1071,3 +1071,227 @@ upstreams:
 		t.Fatal("expected retry")
 	}
 }
+
+func TestServerTLSConfigLoads(t *testing.T) {
+	yaml := `
+server:
+  address: ":8443"
+  tls:
+    cert_file: /path/to/cert.pem
+    key_file: /path/to/key.pem
+    min_version: "1.3"
+    client_ca_file: /path/to/ca.pem
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tls := cfg.Server().TLS()
+	if tls == nil {
+		t.Fatal("expected server TLS config")
+	}
+	if tls.CertFile() != "/path/to/cert.pem" {
+		t.Errorf("cert_file = %q, want /path/to/cert.pem", tls.CertFile())
+	}
+	if tls.KeyFile() != "/path/to/key.pem" {
+		t.Errorf("key_file = %q, want /path/to/key.pem", tls.KeyFile())
+	}
+	if tls.MinVersion() != "1.3" {
+		t.Errorf("min_version = %q, want 1.3", tls.MinVersion())
+	}
+	if tls.ClientCAFile() != "/path/to/ca.pem" {
+		t.Errorf("client_ca_file = %q, want /path/to/ca.pem", tls.ClientCAFile())
+	}
+}
+
+func TestServerTLSDefaultMinVersion(t *testing.T) {
+	yaml := `
+server:
+  tls:
+    cert_file: /cert.pem
+    key_file: /key.pem
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().TLS().MinVersion() != "1.2" {
+		t.Errorf("default min_version = %q, want 1.2", cfg.Server().TLS().MinVersion())
+	}
+}
+
+func TestServerTLSNilWhenNotConfigured(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server().TLS() != nil {
+		t.Error("expected nil TLS when not configured")
+	}
+}
+
+func TestServerTLSMissingCertFile(t *testing.T) {
+	yaml := `
+server:
+  tls:
+    key_file: /key.pem
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when cert_file is missing")
+	}
+}
+
+func TestServerTLSMissingKeyFile(t *testing.T) {
+	yaml := `
+server:
+  tls:
+    cert_file: /cert.pem
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when key_file is missing")
+	}
+}
+
+func TestServerTLSInvalidMinVersion(t *testing.T) {
+	yaml := `
+server:
+  tls:
+    cert_file: /cert.pem
+    key_file: /key.pem
+    min_version: "2.0"
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid min_version")
+	}
+}
+
+func TestUpstreamTLSConfigLoads(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: secure-tools
+    transport: streamable-http
+    url: https://tools.internal:8443/mcp
+    tls:
+      ca_file: /path/to/ca.pem
+      cert_file: /path/to/client-cert.pem
+      key_file: /path/to/client-key.pem
+      insecure_skip_verify: true
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	h := cfg.Upstreams()[0].(*HTTPUpstreamConfig)
+	tls := h.TLS()
+	if tls == nil {
+		t.Fatal("expected upstream TLS config")
+	}
+	if tls.CAFile() != "/path/to/ca.pem" {
+		t.Errorf("ca_file = %q, want /path/to/ca.pem", tls.CAFile())
+	}
+	if tls.CertFile() != "/path/to/client-cert.pem" {
+		t.Errorf("cert_file = %q, want /path/to/client-cert.pem", tls.CertFile())
+	}
+	if tls.KeyFile() != "/path/to/client-key.pem" {
+		t.Errorf("key_file = %q, want /path/to/client-key.pem", tls.KeyFile())
+	}
+	if !tls.InsecureSkipVerify() {
+		t.Error("insecure_skip_verify should be true")
+	}
+}
+
+func TestUpstreamTLSCertWithoutKey(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: bad
+    transport: streamable-http
+    url: https://example.com
+    tls:
+      cert_file: /cert.pem
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when cert_file is set without key_file")
+	}
+}
+
+func TestUpstreamTLSKeyWithoutCert(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: bad
+    transport: streamable-http
+    url: https://example.com
+    tls:
+      key_file: /key.pem
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when key_file is set without cert_file")
+	}
+}
+
+func TestUpstreamTLSOnStdioRejected(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: bad
+    transport: stdio
+    command: ["python", "server.py"]
+    tls:
+      insecure_skip_verify: true
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when TLS is set on stdio transport")
+	}
+}
+
+func TestUpstreamTLSNilWhenNotConfigured(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	h := cfg.Upstreams()[0].(*HTTPUpstreamConfig)
+	if h.TLS() != nil {
+		t.Error("expected nil TLS when not configured")
+	}
+}

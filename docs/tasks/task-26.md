@@ -1,6 +1,6 @@
 # Task 26: TLS and mTLS Support
 
-**Status:** todo
+**Status:** done
 **Depends on:** 15
 
 ---

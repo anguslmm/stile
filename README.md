@@ -293,30 +293,43 @@ Stile handles `SIGINT`/`SIGTERM` by draining in-flight requests before exiting.
 
 ### TLS / Transport Security
 
-Stile does not terminate TLS natively (this is planned — see task 26). In production, terminate TLS at the layer in front of Stile:
+Stile supports native TLS termination for inbound connections and TLS/mTLS for outbound connections to upstream MCP servers.
+
+**Inbound TLS** — serve HTTPS directly from Stile:
+
+```yaml
+server:
+  address: ":8443"
+  tls:
+    cert_file: /path/to/cert.pem
+    key_file: /path/to/key.pem
+    min_version: "1.2"           # optional, default TLS 1.2
+    client_ca_file: /path/to/ca.pem  # optional, enables mTLS for inbound
+```
+
+When `client_ca_file` is set, Stile requires and verifies client certificates (mTLS).
+
+**Outbound TLS** — connect to upstreams with custom CAs or client certificates:
+
+```yaml
+upstreams:
+  - name: secure-tools
+    transport: streamable-http
+    url: https://tools.internal:8443/mcp
+    tls:
+      ca_file: /path/to/internal-ca.pem      # custom CA for upstream
+      cert_file: /path/to/client-cert.pem     # client cert for mTLS
+      key_file: /path/to/client-key.pem       # client key for mTLS
+      insecure_skip_verify: false             # never true in prod
+```
+
+**If TLS is not configured**, Stile serves plaintext HTTP (the default). Most production deployments terminate TLS at the load balancer instead:
 
 - **Cloud load balancer** (AWS ALB, GCP HTTPS LB, Azure App Gateway) — the standard approach. TLS is handled for you; Stile receives plaintext on a private network.
-- **Reverse proxy sidecar** — for bare-metal or VM deployments without a managed LB:
-  - **[Caddy](https://caddyserver.com/)** — automatic HTTPS with Let's Encrypt, zero config. Recommended for simplicity.
-    ```
-    stile.example.com {
-        reverse_proxy localhost:8080
-    }
-    ```
-  - **nginx** — widely deployed, well-understood:
-    ```nginx
-    server {
-        listen 443 ssl;
-        ssl_certificate     /etc/ssl/cert.pem;
-        ssl_certificate_key /etc/ssl/key.pem;
-        location / {
-            proxy_pass http://127.0.0.1:8080;
-        }
-    }
-    ```
-- **Service mesh** (Istio, Linkerd) — if you're in Kubernetes and need mTLS between services, the mesh sidecar handles it transparently. Stile still listens on plaintext.
+- **Reverse proxy sidecar** (Caddy, nginx) — for bare-metal or VM deployments.
+- **Service mesh** (Istio, Linkerd) — transparent mTLS between services in Kubernetes.
 
-In all cases, Stile should listen on `127.0.0.1` or a private network interface — never bind to `0.0.0.0` without TLS in front.
+When serving plaintext, Stile should listen on `127.0.0.1` or a private network interface — never bind to `0.0.0.0` without TLS.
 
 ## Troubleshooting
 

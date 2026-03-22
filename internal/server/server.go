@@ -3,10 +3,14 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -137,12 +141,29 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 		Handler: mux,
 	}
 
+	if tlsCfg := cfg.Server().TLS(); tlsCfg != nil {
+		tc, err := buildServerTLSConfig(tlsCfg)
+		if err != nil {
+			slog.Error("build server TLS config failed", "error", err)
+			os.Exit(1)
+		}
+		s.httpServer.TLSConfig = tc
+	}
+
 	return s
 }
 
-// ListenAndServe starts the HTTP server.
+// ListenAndServe starts the HTTP server. If TLS is configured, it serves HTTPS.
 func (s *Server) ListenAndServe() error {
+	if s.httpServer.TLSConfig != nil {
+		return s.httpServer.ListenAndServeTLS("", "")
+	}
 	return s.httpServer.ListenAndServe()
+}
+
+// TLSEnabled reports whether the server is configured for TLS.
+func (s *Server) TLSEnabled() bool {
+	return s.httpServer.TLSConfig != nil
 }
 
 // Shutdown gracefully shuts down the server.
@@ -343,6 +364,46 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
+}
+
+func buildServerTLSConfig(cfg *config.ServerTLSConfig) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile(), cfg.KeyFile())
+	if err != nil {
+		return nil, fmt.Errorf("load server certificate: %w", err)
+	}
+
+	tc := &tls.Config{
+		MinVersion:   parseTLSVersion(cfg.MinVersion()),
+		Certificates: []tls.Certificate{cert},
+	}
+
+	if cfg.ClientCAFile() != "" {
+		caCert, err := os.ReadFile(cfg.ClientCAFile())
+		if err != nil {
+			return nil, fmt.Errorf("read client CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse client CA certificate from %s", cfg.ClientCAFile())
+		}
+		tc.ClientCAs = pool
+		tc.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return tc, nil
+}
+
+func parseTLSVersion(v string) uint16 {
+	switch v {
+	case "1.0":
+		return tls.VersionTLS10
+	case "1.1":
+		return tls.VersionTLS11
+	case "1.3":
+		return tls.VersionTLS13
+	default:
+		return tls.VersionTLS12
+	}
 }
 
 func writeError(w http.ResponseWriter, id jsonrpc.ID, code int, message string) {

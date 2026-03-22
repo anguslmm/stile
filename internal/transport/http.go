@@ -3,6 +3,8 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,12 +59,22 @@ func NewHTTPTransport(cfg *config.HTTPUpstreamConfig) (*HTTPTransport, error) {
 		timeout = 60 * time.Second
 	}
 
+	httpTransport := &http.Transport{
+		ResponseHeaderTimeout: timeout,
+	}
+
+	if tlsCfg := cfg.TLS(); tlsCfg != nil {
+		tc, err := buildUpstreamTLSConfig(tlsCfg)
+		if err != nil {
+			return nil, fmt.Errorf("transport/http: build TLS config for %q: %w", cfg.Name(), err)
+		}
+		httpTransport.TLSClientConfig = tc
+	}
+
 	t := &HTTPTransport{
 		url: cfg.URL(),
 		client: &http.Client{
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: timeout,
-			},
+			Transport: httpTransport,
 		},
 		failThreshold: 3,
 		healthy:       true,
@@ -73,6 +85,34 @@ func NewHTTPTransport(cfg *config.HTTPUpstreamConfig) (*HTTPTransport, error) {
 	}
 
 	return t, nil
+}
+
+func buildUpstreamTLSConfig(cfg *config.UpstreamTLSConfig) (*tls.Config, error) {
+	tc := &tls.Config{
+		InsecureSkipVerify: cfg.InsecureSkipVerify(),
+	}
+
+	if cfg.CAFile() != "" {
+		caCert, err := os.ReadFile(cfg.CAFile())
+		if err != nil {
+			return nil, fmt.Errorf("read CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", cfg.CAFile())
+		}
+		tc.RootCAs = pool
+	}
+
+	if cfg.CertFile() != "" && cfg.KeyFile() != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile(), cfg.KeyFile())
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate: %w", err)
+		}
+		tc.Certificates = []tls.Certificate{cert}
+	}
+
+	return tc, nil
 }
 
 // RoundTrip sends a JSON-RPC request to the upstream and returns the result.

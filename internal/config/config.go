@@ -120,11 +120,53 @@ func (r *RetryConfig) RetryableErrors() []string {
 	return out
 }
 
+// ServerTLSConfig provides read-only access to inbound TLS settings.
+type ServerTLSConfig struct {
+	certFile     string
+	keyFile      string
+	minVersion   string
+	clientCAFile string
+}
+
+// CertFile returns the path to the server certificate.
+func (t *ServerTLSConfig) CertFile() string { return t.certFile }
+
+// KeyFile returns the path to the server private key.
+func (t *ServerTLSConfig) KeyFile() string { return t.keyFile }
+
+// MinVersion returns the minimum TLS version (e.g. "1.2"). Default: "1.2".
+func (t *ServerTLSConfig) MinVersion() string { return t.minVersion }
+
+// ClientCAFile returns the path to the CA file for client certificate verification.
+// If set, inbound mTLS is required.
+func (t *ServerTLSConfig) ClientCAFile() string { return t.clientCAFile }
+
+// UpstreamTLSConfig provides read-only access to per-upstream outbound TLS settings.
+type UpstreamTLSConfig struct {
+	caFile             string
+	certFile           string
+	keyFile            string
+	insecureSkipVerify bool
+}
+
+// CAFile returns the path to a custom CA certificate for verifying the upstream.
+func (u *UpstreamTLSConfig) CAFile() string { return u.caFile }
+
+// CertFile returns the path to the client certificate for mTLS with the upstream.
+func (u *UpstreamTLSConfig) CertFile() string { return u.certFile }
+
+// KeyFile returns the path to the client key for mTLS with the upstream.
+func (u *UpstreamTLSConfig) KeyFile() string { return u.keyFile }
+
+// InsecureSkipVerify returns whether to skip TLS certificate verification (dev only).
+func (u *UpstreamTLSConfig) InsecureSkipVerify() bool { return u.insecureSkipVerify }
+
 // HTTPUpstreamConfig is an UpstreamConfig for streamable-http upstreams.
 type HTTPUpstreamConfig struct {
 	name           string
 	url            string
 	auth           *AuthConfig
+	tls            *UpstreamTLSConfig
 	tools          []string
 	rateLimit      *RateLimit
 	timeout        time.Duration
@@ -134,10 +176,11 @@ type HTTPUpstreamConfig struct {
 
 func (*HTTPUpstreamConfig) upstreamConfig() {}
 
-func (h *HTTPUpstreamConfig) Name() string         { return h.name }
-func (h *HTTPUpstreamConfig) URL() string           { return h.url }
-func (h *HTTPUpstreamConfig) Auth() *AuthConfig     { return h.auth }
-func (h *HTTPUpstreamConfig) RateLimit() *RateLimit { return h.rateLimit }
+func (h *HTTPUpstreamConfig) Name() string                { return h.name }
+func (h *HTTPUpstreamConfig) URL() string                  { return h.url }
+func (h *HTTPUpstreamConfig) Auth() *AuthConfig            { return h.auth }
+func (h *HTTPUpstreamConfig) TLS() *UpstreamTLSConfig      { return h.tls }
+func (h *HTTPUpstreamConfig) RateLimit() *RateLimit        { return h.rateLimit }
 
 // Tools returns a copy of the tools slice.
 func (h *HTTPUpstreamConfig) Tools() []string {
@@ -314,6 +357,7 @@ func (c *Config) Server() ServerConfig {
 		dbPath:          c.server.dbPath,
 		database:        c.server.database,
 		shutdownTimeout: c.server.shutdownTimeout,
+		tls:             c.server.tls,
 	}
 }
 
@@ -391,6 +435,7 @@ type ServerConfig struct {
 	dbPath          string
 	database        DatabaseConfig
 	shutdownTimeout time.Duration
+	tls             *ServerTLSConfig
 }
 
 // Address returns the listen address (e.g. ":8080").
@@ -409,6 +454,9 @@ func (s ServerConfig) Database() DatabaseConfig { return s.database }
 
 // ShutdownTimeout returns the graceful shutdown timeout. Default: 30s.
 func (s ServerConfig) ShutdownTimeout() time.Duration { return s.shutdownTimeout }
+
+// TLS returns the server TLS configuration, or nil if TLS is not configured.
+func (s ServerConfig) TLS() *ServerTLSConfig { return s.tls }
 
 // DatabaseConfig provides read-only access to database settings.
 type DatabaseConfig struct {
@@ -512,6 +560,7 @@ type serverConfig struct {
 	dbPath          string
 	database        DatabaseConfig
 	shutdownTimeout time.Duration
+	tls             *ServerTLSConfig
 }
 
 // RoleConfig provides read-only access to a role's settings.
@@ -631,11 +680,12 @@ type rawDatabaseConfig struct {
 }
 
 type rawServerConfig struct {
-	Address         string             `yaml:"address"`
-	ToolCacheTTL    string             `yaml:"tool_cache_ttl"`
-	DBPath          string             `yaml:"db_path"`
-	Database        *rawDatabaseConfig `yaml:"database"`
-	ShutdownTimeout string             `yaml:"shutdown_timeout"`
+	Address         string              `yaml:"address"`
+	ToolCacheTTL    string              `yaml:"tool_cache_ttl"`
+	DBPath          string              `yaml:"db_path"`
+	Database        *rawDatabaseConfig  `yaml:"database"`
+	ShutdownTimeout string              `yaml:"shutdown_timeout"`
+	TLS             *rawServerTLSConfig `yaml:"tls"`
 }
 
 type rawUpstreamConfig struct {
@@ -645,6 +695,7 @@ type rawUpstreamConfig struct {
 	Env            map[string]string        `yaml:"env"`
 	Transport      string                   `yaml:"transport"`
 	Auth           *rawAuthConfig           `yaml:"auth"`
+	TLS            *rawUpstreamTLSConfig    `yaml:"tls"`
 	Tools          []string                 `yaml:"tools"`
 	RateLimit      string                   `yaml:"rate_limit"`
 	Timeout        string                   `yaml:"timeout"`
@@ -667,6 +718,20 @@ type rawRetryConfig struct {
 type rawAuthConfig struct {
 	Type     string `yaml:"type"`
 	TokenEnv string `yaml:"token_env"`
+}
+
+type rawServerTLSConfig struct {
+	CertFile     string `yaml:"cert_file"`
+	KeyFile      string `yaml:"key_file"`
+	MinVersion   string `yaml:"min_version"`
+	ClientCAFile string `yaml:"client_ca_file"`
+}
+
+type rawUpstreamTLSConfig struct {
+	CAFile             string `yaml:"ca_file"`
+	CertFile           string `yaml:"cert_file"`
+	KeyFile            string `yaml:"key_file"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
 // Load reads, parses, and validates a config file. It returns a valid *Config
@@ -771,6 +836,19 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.server.shutdownTimeout = 30 * time.Second
 	}
 
+	if raw.Server.TLS != nil {
+		minVer := raw.Server.TLS.MinVersion
+		if minVer == "" {
+			minVer = "1.2"
+		}
+		cfg.server.tls = &ServerTLSConfig{
+			certFile:     raw.Server.TLS.CertFile,
+			keyFile:      raw.Server.TLS.KeyFile,
+			minVersion:   minVer,
+			clientCAFile: raw.Server.TLS.ClientCAFile,
+		}
+	}
+
 	cfg.upstreams = make([]UpstreamConfig, len(raw.Upstreams))
 	for i, ru := range raw.Upstreams {
 		var rl *RateLimit
@@ -871,6 +949,14 @@ func convert(raw rawConfig) (*Config, error) {
 				h.auth = &AuthConfig{
 					authType: ru.Auth.Type,
 					tokenEnv: ru.Auth.TokenEnv,
+				}
+			}
+			if ru.TLS != nil {
+				h.tls = &UpstreamTLSConfig{
+					caFile:             ru.TLS.CAFile,
+					certFile:           ru.TLS.CertFile,
+					keyFile:            ru.TLS.KeyFile,
+					insecureSkipVerify: ru.TLS.InsecureSkipVerify,
 				}
 			}
 			cfg.upstreams[i] = h
@@ -1088,6 +1174,34 @@ func validate(raw rawConfig) error {
 		}
 		if raw.Server.DBPath != "" {
 			return fmt.Errorf("config: cannot set both db_path and database")
+		}
+	}
+
+	if raw.Server.TLS != nil {
+		if raw.Server.TLS.CertFile == "" {
+			return fmt.Errorf("config: server.tls.cert_file is required when TLS is configured")
+		}
+		if raw.Server.TLS.KeyFile == "" {
+			return fmt.Errorf("config: server.tls.key_file is required when TLS is configured")
+		}
+		switch raw.Server.TLS.MinVersion {
+		case "", "1.0", "1.1", "1.2", "1.3":
+		default:
+			return fmt.Errorf("config: server.tls.min_version must be 1.0, 1.1, 1.2, or 1.3, got %q", raw.Server.TLS.MinVersion)
+		}
+	}
+
+	for _, u := range raw.Upstreams {
+		if u.TLS != nil {
+			if u.TLS.CertFile != "" && u.TLS.KeyFile == "" {
+				return fmt.Errorf("config: upstream %q: tls.key_file is required when tls.cert_file is set", u.Name)
+			}
+			if u.TLS.KeyFile != "" && u.TLS.CertFile == "" {
+				return fmt.Errorf("config: upstream %q: tls.cert_file is required when tls.key_file is set", u.Name)
+			}
+			if u.Transport == "stdio" {
+				return fmt.Errorf("config: upstream %q: tls is not supported for stdio transport", u.Name)
+			}
 		}
 	}
 
