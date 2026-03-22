@@ -38,7 +38,7 @@ jobs:
             ./internal/policy/ ./internal/proxy/ ./benchmarks/ \
             -benchmem -count=6 -benchtime=500ms \
             | tee /tmp/bench-old.txt
-          git checkout - -- .
+          git checkout HEAD -- .
 
       - name: Compare with benchstat
         run: |
