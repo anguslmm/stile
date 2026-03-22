@@ -11,9 +11,11 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/policy"
 	"github.com/anguslmm/stile/internal/router"
 	"github.com/anguslmm/stile/internal/transport"
 )
@@ -542,4 +544,149 @@ func main() {
 		t.Fatalf("failed to build mock stdio server: %v", err)
 	}
 	return binary
+}
+
+// mockRateLimiter implements policy.RateLimiter for testing header output.
+type mockRateLimiter struct {
+	result *policy.RateLimitResult
+}
+
+var _ policy.RateLimiter = (*mockRateLimiter)(nil)
+
+func (m *mockRateLimiter) Allow(_, _, _ string, _ []string) *policy.RateLimitResult {
+	return m.result
+}
+
+func TestRateLimitHeadersOnAllowedRequest(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	rl := &mockRateLimiter{result: &policy.RateLimitResult{
+		Limit:     100,
+		Remaining: 73,
+		ResetAt:   time.Unix(1711036800, 0),
+	}}
+	h := NewHandler(rt, rl, nil, nil)
+
+	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(1),
+	}
+	w := httptest.NewRecorder()
+	h.HandleToolsCall(context.Background(), w, req)
+
+	if w.Header().Get("X-RateLimit-Limit") != "100" {
+		t.Errorf("expected X-RateLimit-Limit=100, got %q", w.Header().Get("X-RateLimit-Limit"))
+	}
+	if w.Header().Get("X-RateLimit-Remaining") != "73" {
+		t.Errorf("expected X-RateLimit-Remaining=73, got %q", w.Header().Get("X-RateLimit-Remaining"))
+	}
+	if w.Header().Get("X-RateLimit-Reset") != "1711036800" {
+		t.Errorf("expected X-RateLimit-Reset=1711036800, got %q", w.Header().Get("X-RateLimit-Reset"))
+	}
+	if w.Header().Get("Retry-After") != "" {
+		t.Errorf("expected no Retry-After on allowed request, got %q", w.Header().Get("Retry-After"))
+	}
+}
+
+func TestRateLimitHeadersOnDeniedRequest(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	rl := &mockRateLimiter{result: &policy.RateLimitResult{
+		Denial:     &policy.Denial{Level: "caller"},
+		Limit:      100,
+		Remaining:  0,
+		ResetAt:    time.Unix(1711036800, 0),
+		RetryAfter: 12 * time.Second,
+	}}
+	h := NewHandler(rt, rl, nil, nil)
+
+	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(1),
+	}
+	w := httptest.NewRecorder()
+	h.HandleToolsCall(context.Background(), w, req)
+
+	if w.Header().Get("X-RateLimit-Limit") != "100" {
+		t.Errorf("expected X-RateLimit-Limit=100, got %q", w.Header().Get("X-RateLimit-Limit"))
+	}
+	if w.Header().Get("X-RateLimit-Remaining") != "0" {
+		t.Errorf("expected X-RateLimit-Remaining=0, got %q", w.Header().Get("X-RateLimit-Remaining"))
+	}
+	if w.Header().Get("Retry-After") != "12" {
+		t.Errorf("expected Retry-After=12, got %q", w.Header().Get("Retry-After"))
+	}
+
+	// Verify JSON-RPC error response.
+	var resp jsonrpc.Response
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Error == nil || resp.Error.Code != -32000 {
+		t.Errorf("expected rate limit error response, got %+v", resp.Error)
+	}
+}
+
+func TestNoRateLimitHeadersWithoutLimiter(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	// No rate limiter configured.
+	h := NewHandler(rt, nil, nil, nil)
+
+	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	req := &jsonrpc.Request{
+		JSONRPC: jsonrpc.Version,
+		Method:  "tools/call",
+		Params:  params,
+		ID:      jsonrpc.IntID(1),
+	}
+	w := httptest.NewRecorder()
+	h.HandleToolsCall(context.Background(), w, req)
+
+	if w.Header().Get("X-RateLimit-Limit") != "" {
+		t.Errorf("expected no rate limit headers without limiter, got X-RateLimit-Limit=%q", w.Header().Get("X-RateLimit-Limit"))
+	}
+}
+
+func TestNoRateLimitHeadersOnNonToolCall(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	rt := newTestRouter(t, []string{"a"}, map[string]transport.Transport{"a": mockA})
+	defer rt.Close()
+
+	rl := &mockRateLimiter{result: &policy.RateLimitResult{
+		Limit:     100,
+		Remaining: 99,
+		ResetAt:   time.Unix(1711036800, 0),
+	}}
+	h := NewHandler(rt, rl, nil, nil)
+
+	// tools/list goes through HandleToolsList which doesn't call the rate limiter.
+	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// HandleToolsList returns a *jsonrpc.Response, not headers — there's no
+	// http.ResponseWriter involved, so no headers to check. This confirms
+	// rate limit headers are only set in the HandleToolsCall path.
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
 }

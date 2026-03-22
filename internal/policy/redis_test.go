@@ -38,9 +38,9 @@ rate_limits:
 `)
 
 	for i := 0; i < 5; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
-			t.Fatalf("request %d should be allowed, denied by %s", i, denial.Level)
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil && result.Denial != nil {
+			t.Fatalf("request %d should be allowed, denied by %s", i, result.Denial.Level)
 		}
 	}
 }
@@ -60,8 +60,8 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil && result.Denial != nil {
 			rejected++
 		}
 	}
@@ -89,9 +89,9 @@ rate_limits:
 	}
 
 	// Caller B should still be allowed.
-	denial := rl.Allow("bob", "tool-a", "svc", nil)
-	if denial != nil {
-		t.Fatalf("bob should not be rate limited, denied by %s", denial.Level)
+	result := rl.Allow("bob", "tool-a", "svc", nil)
+	if result != nil && result.Denial != nil {
+		t.Fatalf("bob should not be rate limited, denied by %s", result.Denial.Level)
 	}
 }
 
@@ -114,9 +114,9 @@ rate_limits:
 	}
 
 	// Alice should still be allowed for tool-b.
-	denial := rl.Allow("alice", "tool-b", "svc", nil)
-	if denial != nil {
-		t.Fatalf("alice should be allowed for tool-b, denied by %s", denial.Level)
+	result := rl.Allow("alice", "tool-b", "svc", nil)
+	if result != nil && result.Denial != nil {
+		t.Fatalf("alice should be allowed for tool-b, denied by %s", result.Denial.Level)
 	}
 }
 
@@ -136,10 +136,10 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		if denial := rl.Allow("alice", "tool-a", "svc", nil); denial != nil {
+		if r := rl.Allow("alice", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
-		if denial := rl.Allow("bob", "tool-a", "svc", nil); denial != nil {
+		if r := rl.Allow("bob", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}
@@ -160,9 +160,9 @@ rate_limits:
 `)
 
 	for i := 0; i < 100; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
-			t.Fatalf("request %d should be allowed with no limits configured, denied by %s", i, denial.Level)
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil {
+			t.Fatalf("request %d: expected nil result with no limits configured", i)
 		}
 	}
 }
@@ -181,8 +181,8 @@ rate_limits:
 `)
 
 	// Should work initially.
-	denial := rl.Allow("alice", "tool-a", "svc", nil)
-	if denial != nil {
+	result := rl.Allow("alice", "tool-a", "svc", nil)
+	if result != nil && result.Denial != nil {
 		t.Fatal("expected to be allowed while Redis is up")
 	}
 
@@ -190,8 +190,8 @@ rate_limits:
 	mr.Close()
 
 	// Should deny (fail-closed).
-	denial = rl.Allow("alice", "tool-a", "svc", nil)
-	if denial == nil {
+	result = rl.Allow("alice", "tool-a", "svc", nil)
+	if result == nil || result.Denial == nil {
 		t.Fatal("expected denial when Redis is down (fail-closed)")
 	}
 }
@@ -262,7 +262,7 @@ rate_limits:
 	// The 11th request (from either instance) should be denied.
 	rejected := 0
 	for i := 0; i < 5; i++ {
-		if denial := rl1.Allow("alice", "tool-a", "svc", nil); denial != nil {
+		if r := rl1.Allow("alice", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}
@@ -294,7 +294,7 @@ rate_limits:
 	// Premium user should get high limit.
 	rejected := 0
 	for i := 0; i < 50; i++ {
-		if denial := rl.Allow("premium-user", "tool-a", "svc", []string{"premium"}); denial != nil {
+		if r := rl.Allow("premium-user", "tool-a", "svc", []string{"premium"}); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}

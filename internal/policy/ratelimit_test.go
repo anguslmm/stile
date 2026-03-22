@@ -28,9 +28,9 @@ rate_limits:
 `)
 
 	for i := 0; i < 5; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
-			t.Fatalf("request %d should be allowed, denied by %s", i, denial.Level)
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil && result.Denial != nil {
+			t.Fatalf("request %d should be allowed, denied by %s", i, result.Denial.Level)
 		}
 	}
 }
@@ -48,8 +48,8 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil && result.Denial != nil {
 			rejected++
 		}
 	}
@@ -75,9 +75,9 @@ rate_limits:
 	}
 
 	// Caller B should still be allowed.
-	denial := rl.Allow("bob", "tool-a", "svc", nil)
-	if denial != nil {
-		t.Fatalf("bob should not be rate limited, denied by %s", denial.Level)
+	result := rl.Allow("bob", "tool-a", "svc", nil)
+	if result != nil && result.Denial != nil {
+		t.Fatalf("bob should not be rate limited, denied by %s", result.Denial.Level)
 	}
 }
 
@@ -98,9 +98,9 @@ rate_limits:
 	}
 
 	// Alice should still be allowed for tool-b.
-	denial := rl.Allow("alice", "tool-b", "svc", nil)
-	if denial != nil {
-		t.Fatalf("alice should be allowed for tool-b, denied by %s", denial.Level)
+	result := rl.Allow("alice", "tool-b", "svc", nil)
+	if result != nil && result.Denial != nil {
+		t.Fatalf("alice should be allowed for tool-b, denied by %s", result.Denial.Level)
 	}
 }
 
@@ -119,10 +119,10 @@ rate_limits:
 	rejected := 0
 	// Two callers each sending rapid requests to the same upstream.
 	for i := 0; i < 20; i++ {
-		if denial := rl.Allow("alice", "tool-a", "svc", nil); denial != nil {
+		if r := rl.Allow("alice", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
-		if denial := rl.Allow("bob", "tool-a", "svc", nil); denial != nil {
+		if r := rl.Allow("bob", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}
@@ -139,11 +139,11 @@ upstreams:
     url: http://fake
 `)
 
-	// With no rate limits, everything should pass.
+	// With no rate limits, everything should pass (result is nil).
 	for i := 0; i < 100; i++ {
-		denial := rl.Allow("alice", "tool-a", "svc", nil)
-		if denial != nil {
-			t.Fatalf("request %d should be allowed with no limits configured, denied by %s", i, denial.Level)
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result != nil {
+			t.Fatalf("request %d: expected nil result with no limits configured, got limit=%d remaining=%d", i, result.Limit, result.Remaining)
 		}
 	}
 }
@@ -160,8 +160,8 @@ rate_limits:
 
 	// Empty caller should skip caller-level check.
 	for i := 0; i < 20; i++ {
-		denial := rl.Allow("", "tool-a", "svc", nil)
-		if denial != nil {
+		result := rl.Allow("", "tool-a", "svc", nil)
+		if result != nil && result.Denial != nil {
 			t.Fatalf("request %d should be allowed with empty caller", i)
 		}
 	}
@@ -188,7 +188,7 @@ rate_limits:
 	// Premium user should get high limit (roles passed via Allow).
 	rejected := 0
 	for i := 0; i < 50; i++ {
-		if denial := rl.Allow("premium-user", "tool-a", "svc", []string{"premium"}); denial != nil {
+		if r := rl.Allow("premium-user", "tool-a", "svc", []string{"premium"}); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}
@@ -210,12 +210,12 @@ rate_limits:
 
 	rl.Allow("alice", "tool-a", "svc", nil) // consume the 1 token
 
-	denial := rl.Allow("alice", "tool-a", "svc", nil)
-	if denial == nil {
+	result := rl.Allow("alice", "tool-a", "svc", nil)
+	if result == nil || result.Denial == nil {
 		t.Fatal("expected rejection")
 	}
-	if denial.Level != "caller" {
-		t.Errorf("expected denial level 'caller', got %q", denial.Level)
+	if result.Denial.Level != "caller" {
+		t.Errorf("expected denial level 'caller', got %q", result.Denial.Level)
 	}
 }
 
@@ -257,11 +257,115 @@ rate_limits:
 
 	rejected := 0
 	for i := 0; i < 20; i++ {
-		if denial := rl.Allow("", "tool-a", "svc", nil); denial != nil {
+		if r := rl.Allow("", "tool-a", "svc", nil); r != nil && r.Denial != nil {
 			rejected++
 		}
 	}
 	if rejected == 0 {
 		t.Fatal("expected some rejections with default_upstream: 5/sec")
+	}
+}
+
+func TestRateLimitResultFields(t *testing.T) {
+	rl := localRateLimiterFromYAML(t, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_caller: 5/sec
+  default_tool: 5/sec
+`)
+
+	// First request: should be allowed and report state.
+	result := rl.Allow("alice", "tool-a", "svc", nil)
+	if result == nil {
+		t.Fatal("expected non-nil result when limits are configured")
+	}
+	if result.Denial != nil {
+		t.Fatal("first request should be allowed")
+	}
+	if result.Limit != 5 {
+		t.Errorf("expected Limit=5, got %d", result.Limit)
+	}
+	if result.Remaining > 5 || result.Remaining < 0 {
+		t.Errorf("Remaining out of range: %d", result.Remaining)
+	}
+}
+
+func TestRateLimitRemainingDecreases(t *testing.T) {
+	rl := localRateLimiterFromYAML(t, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_caller: 10/sec
+  default_tool: 10/sec
+`)
+
+	var prev int = -1
+	decreased := false
+	for i := 0; i < 5; i++ {
+		result := rl.Allow("alice", "tool-a", "svc", nil)
+		if result == nil || result.Denial != nil {
+			t.Fatalf("request %d unexpectedly denied", i)
+		}
+		if prev >= 0 && result.Remaining < prev {
+			decreased = true
+		}
+		prev = result.Remaining
+	}
+	if !decreased {
+		t.Error("expected Remaining to decrease across requests")
+	}
+}
+
+func TestDeniedResultHasRetryAfter(t *testing.T) {
+	rl := localRateLimiterFromYAML(t, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_caller: 1/sec
+  default_tool: 1000/sec
+`)
+
+	rl.Allow("alice", "tool-a", "svc", nil) // consume the 1 token
+
+	result := rl.Allow("alice", "tool-a", "svc", nil)
+	if result == nil || result.Denial == nil {
+		t.Fatal("expected denial")
+	}
+	if result.RetryAfter <= 0 {
+		t.Errorf("expected positive RetryAfter, got %v", result.RetryAfter)
+	}
+	if result.Remaining != 0 {
+		t.Errorf("expected Remaining=0 on denial, got %d", result.Remaining)
+	}
+}
+
+func TestMostRestrictiveLimitReported(t *testing.T) {
+	rl := localRateLimiterFromYAML(t, `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: http://fake
+rate_limits:
+  default_caller: 100/sec
+  default_tool: 3/sec
+`)
+
+	// Send 2 requests — tool limit (burst 3) will be more restrictive than caller (burst 100).
+	rl.Allow("alice", "tool-a", "svc", nil)
+	result := rl.Allow("alice", "tool-a", "svc", nil)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	// The reported Limit should be 3 (the tool limit), not 100 (caller limit),
+	// because tool limit has fewer remaining tokens.
+	if result.Limit != 3 {
+		t.Errorf("expected Limit=3 (most restrictive), got %d", result.Limit)
 	}
 }

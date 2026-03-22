@@ -5,7 +5,9 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"time"
 
@@ -149,20 +151,22 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	// Rate limit check.
+	var rlResult *policy.RateLimitResult
 	if h.rateLimiter != nil {
 		var roles []string
 		if caller != nil {
 			roles = caller.Roles
 		}
-		if denial := h.rateLimiter.Allow(callerName, params.Name, upstreamName, roles); denial != nil {
+		rlResult = h.rateLimiter.Allow(callerName, params.Name, upstreamName, roles)
+		if rlResult != nil && rlResult.Denial != nil {
 			slog.DebugContext(ctx, "rate limit rejected",
 				"caller", callerName,
 				"tool", params.Name,
 				"upstream", upstreamName,
-				"level", denial.Level,
+				"level", rlResult.Denial.Level,
 			)
 			if routeSpan != nil {
-				routeSpan.SetStatus(codes.Error, "rate limited: "+denial.Level)
+				routeSpan.SetStatus(codes.Error, "rate limited: "+rlResult.Denial.Level)
 				routeSpan.End()
 			}
 			if h.metrics != nil {
@@ -170,7 +174,8 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 			}
 			h.setSpanError(ctx, "rate limited")
 			h.recordRequest(ctx, callerName, "tools/call", params.Name, upstreamName, "error", req.Params, start)
-			data, _ := json.Marshal(map[string]string{"limit": denial.Level})
+			setRateLimitHeaders(w, rlResult)
+			data, _ := json.Marshal(map[string]string{"limit": rlResult.Denial.Level})
 			writeJSONResponse(w, jsonrpc.NewErrorResponseWithData(req.ID, -32000, "rate limit exceeded", data))
 			return
 		}
@@ -222,10 +227,12 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	h.recordRequest(ctx, callerName, "tools/call", params.Name, upstreamName, status, req.Params, start)
 
 	if err != nil {
+		setRateLimitHeaders(w, rlResult)
 		writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, jsonrpc.CodeInternalError, err.Error()))
 		return
 	}
 
+	setRateLimitHeaders(w, rlResult)
 	result.WriteResponse(ctx, w, h.tracer)
 }
 
@@ -268,6 +275,24 @@ func (h *Handler) recordRequest(ctx context.Context, callerName, method, tool, u
 		if err := h.auditStore.Log(ctx, entry); err != nil {
 			slog.Error("audit log write failed", "error", err)
 		}
+	}
+}
+
+// setRateLimitHeaders sets standard rate limit headers on the response.
+// Does nothing if result is nil (no rate limits configured).
+func setRateLimitHeaders(w http.ResponseWriter, result *policy.RateLimitResult) {
+	if result == nil {
+		return
+	}
+	w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", result.Limit))
+	w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", result.Remaining))
+	w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", result.ResetAt.Unix()))
+	if result.Denial != nil {
+		retryAfter := int(math.Ceil(result.RetryAfter.Seconds()))
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 	}
 }
 

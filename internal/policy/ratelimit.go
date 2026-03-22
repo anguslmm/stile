@@ -2,7 +2,9 @@
 package policy
 
 import (
+	"math"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 
@@ -14,10 +16,20 @@ type Denial struct {
 	Level string // "caller", "tool", or "upstream"
 }
 
+// RateLimitResult holds the outcome of a rate limit check along with state
+// for populating response headers. A nil result means no limits are configured.
+type RateLimitResult struct {
+	Denial     *Denial       // nil if allowed
+	Limit      int           // total requests allowed (burst / window count)
+	Remaining  int           // requests remaining in current window/bucket
+	ResetAt    time.Time     // when the limit fully resets
+	RetryAfter time.Duration // suggested wait before retry (only meaningful on denial)
+}
+
 // RateLimiter checks whether a request is allowed under the configured rate limits.
 // Implementations must be safe for concurrent use.
 type RateLimiter interface {
-	Allow(caller, tool, upstream string, roles []string) *Denial
+	Allow(caller, tool, upstream string, roles []string) *RateLimitResult
 }
 
 // LocalRateLimiter enforces token bucket rate limits at three granularities:
@@ -118,10 +130,17 @@ func NewLocalRateLimiter(cfg *config.Config) *LocalRateLimiter {
 	return rl
 }
 
-// Allow checks all three rate limit levels. Returns nil if allowed, or a
-// Denial indicating which limit was hit. Roles are used to determine the
-// effective rate for the caller (most permissive role wins).
-func (rl *LocalRateLimiter) Allow(caller, tool, upstream string, roles []string) *Denial {
+// limitSnapshot captures the state of a single rate.Limiter after a check.
+type limitSnapshot struct {
+	limit     int
+	remaining int
+	ratePerS  float64
+}
+
+// Allow checks all three rate limit levels. Returns nil if no limits are
+// configured. Otherwise returns a RateLimitResult with the most restrictive
+// limit's state (lowest Remaining). On denial, returns the first denying limit.
+func (rl *LocalRateLimiter) Allow(caller, tool, upstream string, roles []string) *RateLimitResult {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -130,32 +149,92 @@ func (rl *LocalRateLimiter) Allow(caller, tool, upstream string, roles []string)
 		rl.registerCallerLocked(caller, roles)
 	}
 
+	var snapshots []limitSnapshot
+	var denial *Denial
+
 	// Check per-caller limit.
 	if caller != "" {
 		lim := rl.getOrCreateCallerLimiterLocked(caller)
-		if lim != nil && !lim.Allow() {
-			return &Denial{Level: "caller"}
-		}
-	}
-
-	// Check per-caller-per-tool limit.
-	if caller != "" && tool != "" {
-		lim := rl.getOrCreateToolLimiterLocked(caller, tool)
-		if lim != nil && !lim.Allow() {
-			return &Denial{Level: "tool"}
-		}
-	}
-
-	// Check per-upstream limit.
-	if upstream != "" {
-		if lim, ok := rl.upstreamLimiters[upstream]; ok {
+		if lim != nil {
 			if !lim.Allow() {
-				return &Denial{Level: "upstream"}
+				denial = &Denial{Level: "caller"}
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
+			} else {
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
 			}
 		}
 	}
 
-	return nil
+	// Check per-caller-per-tool limit.
+	if denial == nil && caller != "" && tool != "" {
+		lim := rl.getOrCreateToolLimiterLocked(caller, tool)
+		if lim != nil {
+			if !lim.Allow() {
+				denial = &Denial{Level: "tool"}
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
+			} else {
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
+			}
+		}
+	}
+
+	// Check per-upstream limit.
+	if denial == nil && upstream != "" {
+		if lim, ok := rl.upstreamLimiters[upstream]; ok {
+			if !lim.Allow() {
+				denial = &Denial{Level: "upstream"}
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
+			} else {
+				snapshots = append(snapshots, snapshotFromLimiter(lim))
+			}
+		}
+	}
+
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	// Pick the most restrictive snapshot (lowest remaining).
+	best := snapshots[0]
+	for _, s := range snapshots[1:] {
+		if s.remaining < best.remaining {
+			best = s
+		}
+	}
+
+	now := time.Now()
+	deficit := float64(best.limit - best.remaining)
+	resetAt := now
+	if deficit > 0 && best.ratePerS > 0 {
+		resetAt = now.Add(time.Duration(deficit / best.ratePerS * float64(time.Second)))
+	}
+
+	result := &RateLimitResult{
+		Denial:    denial,
+		Limit:     best.limit,
+		Remaining: best.remaining,
+		ResetAt:   resetAt,
+	}
+
+	if denial != nil && best.ratePerS > 0 {
+		result.RetryAfter = time.Duration(math.Ceil(1.0/best.ratePerS)) * time.Second
+	}
+
+	return result
+}
+
+// snapshotFromLimiter captures current state from a rate.Limiter.
+func snapshotFromLimiter(lim *rate.Limiter) limitSnapshot {
+	tokens := lim.Tokens()
+	remaining := int(tokens)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return limitSnapshot{
+		limit:     lim.Burst(),
+		remaining: remaining,
+		ratePerS:  float64(lim.Limit()),
+	}
 }
 
 // registerCallerLocked sets per-caller rates from roles. Only the first call

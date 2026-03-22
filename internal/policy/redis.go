@@ -12,7 +12,7 @@ import (
 
 // slidingWindowScript is a Lua script for atomic sliding window rate limiting.
 // It uses a sorted set where scores are timestamps in microseconds.
-// Returns 1 if allowed, 0 if denied.
+// Returns {allowed, count}: allowed=1/0, count=current entries in window.
 var slidingWindowScript = redis.NewScript(`
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
@@ -25,9 +25,9 @@ local count = redis.call('ZCARD', key)
 if count < limit then
     redis.call('ZADD', key, now, now .. ':' .. math.random())
     redis.call('EXPIRE', key, math.ceil(window_us / 1000000) + 1)
-    return 1
+    return {1, count + 1}
 end
-return 0
+return {0, count}
 `)
 
 // RedisRateLimiter enforces sliding window rate limits backed by Redis,
@@ -100,48 +100,111 @@ func NewRedisRateLimiter(cfg *config.Config) (*RedisRateLimiter, error) {
 	return rl, nil
 }
 
-// Allow checks all three rate limit levels via Redis. Returns nil if allowed,
-// or a Denial. If Redis is unreachable at runtime, returns a denial (fail-closed).
-func (rl *RedisRateLimiter) Allow(caller, tool, upstream string, roles []string) *Denial {
+// redisCheckResult holds the result of a single Redis rate limit check.
+type redisCheckResult struct {
+	allowed bool
+	limit   int // configured max count
+	count   int // current count in window
+	window  int // window in seconds
+}
+
+// Allow checks all three rate limit levels via Redis. Returns nil if no limits
+// are configured. Otherwise returns a RateLimitResult with the most restrictive
+// limit's state. If Redis is unreachable, returns a denial (fail-closed).
+func (rl *RedisRateLimiter) Allow(caller, tool, upstream string, roles []string) *RateLimitResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	now := time.Now().UnixMicro()
+
+	type snapshot struct {
+		limit     int
+		remaining int
+		window    int
+	}
+
+	var snapshots []snapshot
+	var denial *Denial
 
 	// Check per-caller limit.
 	if caller != "" {
 		limit := rl.effectiveCallerLimit(roles)
 		if limit != nil {
 			key := rl.keyPrefix + "rl:caller:" + caller
-			if !rl.checkLimit(ctx, key, limit, now) {
-				return &Denial{Level: "caller"}
+			cr := rl.checkLimitWithInfo(ctx, key, limit, now)
+			remaining := cr.limit - cr.count
+			if remaining < 0 {
+				remaining = 0
 			}
+			if !cr.allowed {
+				denial = &Denial{Level: "caller"}
+			}
+			snapshots = append(snapshots, snapshot{limit: cr.limit, remaining: remaining, window: cr.window})
 		}
 	}
 
 	// Check per-caller-per-tool limit.
-	if caller != "" && tool != "" {
+	if denial == nil && caller != "" && tool != "" {
 		limit := rl.effectiveToolLimit(roles)
 		if limit != nil {
 			key := rl.keyPrefix + "rl:tool:" + caller + ":" + tool
-			if !rl.checkLimit(ctx, key, limit, now) {
-				return &Denial{Level: "tool"}
+			cr := rl.checkLimitWithInfo(ctx, key, limit, now)
+			remaining := cr.limit - cr.count
+			if remaining < 0 {
+				remaining = 0
 			}
+			if !cr.allowed {
+				denial = &Denial{Level: "tool"}
+			}
+			snapshots = append(snapshots, snapshot{limit: cr.limit, remaining: remaining, window: cr.window})
 		}
 	}
 
 	// Check per-upstream limit.
-	if upstream != "" {
+	if denial == nil && upstream != "" {
 		limit := rl.upstreamLimit(upstream)
 		if limit != nil {
 			key := rl.keyPrefix + "rl:upstream:" + upstream
-			if !rl.checkLimit(ctx, key, limit, now) {
-				return &Denial{Level: "upstream"}
+			cr := rl.checkLimitWithInfo(ctx, key, limit, now)
+			remaining := cr.limit - cr.count
+			if remaining < 0 {
+				remaining = 0
 			}
+			if !cr.allowed {
+				denial = &Denial{Level: "upstream"}
+			}
+			snapshots = append(snapshots, snapshot{limit: cr.limit, remaining: remaining, window: cr.window})
 		}
 	}
 
-	return nil
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	// Pick the most restrictive (lowest remaining).
+	best := snapshots[0]
+	for _, s := range snapshots[1:] {
+		if s.remaining < best.remaining {
+			best = s
+		}
+	}
+
+	nowTime := time.Now()
+	result := &RateLimitResult{
+		Denial:    denial,
+		Limit:     best.limit,
+		Remaining: best.remaining,
+		ResetAt:   nowTime.Add(time.Duration(best.window) * time.Second),
+	}
+
+	if denial != nil && best.limit > 0 {
+		result.RetryAfter = time.Duration(best.window) * time.Second / time.Duration(best.limit)
+		if result.RetryAfter < time.Second {
+			result.RetryAfter = time.Second
+		}
+	}
+
+	return result
 }
 
 // Close closes the underlying Redis client.
@@ -149,21 +212,32 @@ func (rl *RedisRateLimiter) Close() error {
 	return rl.client.Close()
 }
 
-// checkLimit runs the sliding window script. Returns true if allowed.
-// On Redis errors, returns false (fail-closed).
-func (rl *RedisRateLimiter) checkLimit(ctx context.Context, key string, limit *config.RateLimit, nowMicro int64) bool {
+// checkLimitWithInfo runs the sliding window script and returns structured info.
+// On Redis errors, returns a denied result (fail-closed).
+func (rl *RedisRateLimiter) checkLimitWithInfo(ctx context.Context, key string, limit *config.RateLimit, nowMicro int64) redisCheckResult {
 	windowMicro := int64(limit.Window()) * 1_000_000
 
-	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key},
+	vals, err := slidingWindowScript.Run(ctx, rl.client, []string{key},
 		limit.Count(), windowMicro, nowMicro,
-	).Int64()
+	).Int64Slice()
 
 	if err != nil {
 		slog.Error("redis rate limit check failed, denying request (fail-closed)",
 			"key", key, "error", err)
-		return false
+		return redisCheckResult{
+			allowed: false,
+			limit:   limit.Count(),
+			count:   limit.Count(),
+			window:  limit.Window(),
+		}
 	}
-	return result == 1
+
+	return redisCheckResult{
+		allowed: vals[0] == 1,
+		limit:   limit.Count(),
+		count:   int(vals[1]),
+		window:  limit.Window(),
+	}
 }
 
 // effectiveCallerLimit returns the most permissive caller rate from the given

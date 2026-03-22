@@ -58,7 +58,7 @@ This is the core path:
 2. Per-caller-per-tool limit
 3. Per-upstream limit
 
-The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (single instance), `RedisRateLimiter` uses Redis sliding windows (multi-instance). Any limit exceeded -> error response with which level was hit.
+The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (single instance), `RedisRateLimiter` uses Redis sliding windows (multi-instance). `Allow()` returns a `*RateLimitResult` containing the allow/deny decision plus rate limit state (limit, remaining, reset time). This is used to populate `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers on every `tools/call` response. On denial, a `Retry-After` header is also included. The headers report the most restrictive of the applicable limits.
 
 **e. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
 1. **Circuit breaker** — if the upstream's circuit is open, the request fails immediately with `"upstream circuit open"`. After a cooldown period, one probe request is allowed through (half-open state). If it succeeds, the circuit closes; if it fails, the circuit reopens.
