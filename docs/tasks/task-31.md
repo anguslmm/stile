@@ -1,115 +1,64 @@
-# Task 31 — Admin dashboard (embedded web UI)
+# Task 31 — Audit: reconcile task docs with codebase
 
 Status: **todo**
 
+## Prerequisites
+
+All other tasks (1–30) must be complete before starting this one.
+
 ## Goal
 
-Add an embedded web UI to the Stile binary for managing callers, API keys, and role assignments, plus read-only visibility into the running configuration and upstream health. No config mutation — YAML stays in git as the source of truth.
+Walk through every task document (task-01.md through task-30.md) one by one and verify that the codebase matches what the task describes. Fix whichever side is wrong:
 
-## Design principles
+- **Code doesn't match task**: The implementation is missing or incomplete — fix the code.
+- **Task doesn't match code**: The design evolved during implementation or a deliberate change was made — update the task doc to reflect what was actually built and why.
 
-- **Callers are runtime state** — already database-backed and managed via the admin API. The UI is a frontend for the existing `/admin/*` endpoints.
-- **Config is declarative** — defined in YAML, committed to git, applied at deploy time. The UI shows what's running but doesn't modify it.
-- **Single binary** — the UI is embedded via `embed.FS`, no separate process or deployment.
+## Process
 
-## New backend endpoints
+For each task:
 
-Add these to `internal/admin/handler.go` alongside the existing caller/key/role endpoints:
+1. Read the task doc.
+2. Verify each deliverable, file, interface, behavior, and test described in the doc against the current codebase.
+3. If there's a mismatch, determine which is correct (the code or the doc) and fix the other.
+4. Mark the task as reviewed in the checklist below.
 
-### `GET /admin/config`
+## Checklist
 
-Returns a JSON representation of the running config (sanitized — no secrets, no TLS key paths). Enough for an operator to see what upstreams are configured, what roles exist, rate limit defaults, etc.
-
-Implementation: add a method to `Config` (or a standalone function) that produces a JSON-safe view. Strip sensitive fields (auth token env var names are fine, but don't leak values).
-
-### `GET /admin/status`
-
-Returns upstream health and basic gateway status:
-
-```json
-{
-  "upstreams": [
-    {
-      "name": "github",
-      "transport": "streamable-http",
-      "healthy": true,
-      "tools_cached": 12,
-      "last_check": "2026-03-22T10:00:00Z"
-    }
-  ],
-  "callers_count": 5,
-  "uptime_seconds": 3600
-}
-```
-
-Draws from the health checker and router's cached tool state.
-
-## Frontend
-
-### Tech choice
-
-Use a lightweight approach — either:
-
-- **htmx + Go templates** — server-rendered, zero JS build step, smallest footprint
-- **Preact/Svelte SPA** — richer interactivity, but needs a build step and `embed.FS`
-
-Recommend starting with htmx + Go templates for simplicity. Can migrate to an SPA later if the UI needs grow.
-
-### Pages
-
-| Page | Description | Backend |
-|---|---|---|
-| Dashboard | Upstream health, caller count, uptime | `GET /admin/status` |
-| Callers | List callers with key count and roles | `GET /admin/callers` |
-| Caller detail | Keys, roles, with add/remove actions | `GET/POST/DELETE /admin/callers/{name}/*` |
-| Config viewer | Read-only view of running configuration | `GET /admin/config` |
-
-### Embedding
-
-```go
-//go:embed ui/dist/*
-var uiFS embed.FS
-
-// Serve under /admin/ui/
-mux.Handle("/admin/ui/", http.StripPrefix("/admin/ui/", http.FileServerFS(uiFS)))
-```
-
-The admin auth middleware already protects `/admin/*`, so the UI is automatically gated behind the same admin key.
-
-## Implementation plan
-
-### 31.1 — Backend: config and status endpoints
-
-1. Add `ConfigJSON()` method or standalone function that serializes a sanitized `Config` to a JSON-friendly struct.
-2. Add `GET /admin/config` handler to `admin.Handler`.
-3. Add `GET /admin/status` handler — needs access to health checker and router for tool cache stats. Extend `admin.NewHandler` params or add a `StatusProvider` interface.
-4. Tests for both endpoints.
-
-### 31.2 — Frontend: embedded UI
-
-1. Create `internal/admin/ui/` with templates and static assets.
-2. Dashboard page with upstream status cards.
-3. Callers list page with table (name, key count, roles).
-4. Caller detail page with key management (create key — show once, revoke) and role assignment (add/remove from dropdown of configured roles).
-5. Config viewer page (formatted JSON or YAML-like display, read-only).
-6. Wire up `embed.FS` and register the file server on `/admin/ui/`.
-
-### 31.3 — Polish
-
-1. Basic styling (keep it minimal — this is an ops tool, not a consumer product).
-2. Error states and empty states.
-3. Navigation between pages.
-4. Docs update: add a section on the admin UI to the operational runbook.
-
-## Files to create/modify
-
-- **Create**: `internal/admin/config_view.go` (sanitized config serialization)
-- **Create**: `internal/admin/ui/` (templates, static assets)
-- **Modify**: `internal/admin/handler.go` (new endpoints, embed + file server)
-- **Modify**: `cmd/gateway/main.go` (pass health checker / router to admin handler if needed)
-
-## What this does NOT include
-
-- Config mutation via the UI (config stays in YAML/git)
-- User authentication for the UI (uses the same admin API key auth)
-- Multi-tenancy or user accounts
+- [ ] Task 1 — Project scaffold + JSON-RPC 2.0 codec
+- [ ] Task 2 — Config + Transport interface + HTTP transport client
+- [ ] Task 3 — Inbound server + proxy handler
+- [ ] Task 4 — Stdio transport
+- [ ] Task 5 — Router + route table + tool discovery/caching
+- [ ] Task 6 — Auth middleware
+- [ ] Task 6.1 — Role-based access control
+- [ ] Task 6.2 — Decouple roles from API keys
+- [ ] Task 6.3 — CLI caller management
+- [ ] Task 7 — Rate limiting
+- [ ] Task 8 — Observability
+- [ ] Task 9 — Health checks + graceful shutdown + hardening
+- [ ] Task 9.1 — Cleanup — main.go and wiring layer
+- [ ] Task 10 — Admin API for caller management
+- [ ] Task 10.1 — Admin API — role management endpoints
+- [ ] Task 11 — Integration tests + release packaging
+- [ ] Task 12 — Critical security fixes
+- [ ] Task 13 — HTTP transport hardening
+- [ ] Task 14 — SQLite + rate limiter hardening
+- [ ] Task 15 — Code health + minor fixes
+- [ ] Task 16 — OpenTelemetry observability
+- [ ] Task 17 — Configurable database backend with Postgres support
+- [ ] Task 18 — Redis-backed rate limiting
+- [ ] Task 18.1 — Remove config hot-reload mechanism
+- [ ] Task 19 — Horizontal scaling documentation and stdio guidance
+- [ ] Task 20 — Upstream resilience
+- [ ] Task 21 — Trace context propagation
+- [ ] Task 22 — Rate limit response headers
+- [ ] Task 23 — Load testing and performance benchmarks
+- [ ] Task 24 — Operational runbooks
+- [ ] Task 25 — Centralized health checks
+- [ ] Task 26 — TLS and mTLS support
+- [ ] Task 27 — `stile wrap` — stdio-to-HTTP adapter subcommand
+- [ ] Task 27.1 — Add OpenTelemetry tracing to `stile wrap`
+- [ ] Task 28 — Admin CLI remote mode (`--remote`)
+- [ ] Task 29 — In-memory cache for hot-path auth lookups
+- [ ] Task 29.1 — Fix flaky test suite under parallel execution
+- [ ] Task 30 — Admin dashboard (embedded web UI)

@@ -49,6 +49,7 @@ Key abstraction: the `Transport` interface (`Send`, `ListTools`, `Close`, `Healt
 
 - **`docs/request-flow.md`** — End-to-end walkthrough of the request path through Stile. If you change the request pipeline (auth, routing, proxying, response handling), update this doc to match.
 - **`docs/stile-design-doc.md`** — Original design doc.
+- **Per-package `CLAUDE.md`** — Each package in `internal/` has its own `CLAUDE.md` summarizing its types, functions, and design constraints. When you change a package's exported interface (add/remove/rename types or functions, change key behavior), update its `CLAUDE.md` to match.
 
 ## Development Workflow
 
