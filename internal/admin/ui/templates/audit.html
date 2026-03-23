@@ -1,0 +1,78 @@
+{{define "content"}}
+<div class="card">
+  <h2>Audit Log</h2>
+  {{if .AuditEnabled}}
+  <form class="filter-form" method="GET" action="/admin/ui/audit">
+    <div class="field">
+      <label>Caller</label>
+      <input type="text" name="caller" value="{{.Filter.Caller}}" placeholder="All">
+    </div>
+    <div class="field">
+      <label>Tool</label>
+      <input type="text" name="tool" value="{{.Filter.Tool}}" placeholder="All">
+    </div>
+    <div class="field">
+      <label>Upstream</label>
+      <input type="text" name="upstream" value="{{.Filter.Upstream}}" placeholder="All">
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select name="status">
+        <option value="">All</option>
+        <option value="ok" {{if eq .Filter.Status "ok"}}selected{{end}}>ok</option>
+        <option value="error" {{if eq .Filter.Status "error"}}selected{{end}}>error</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button type="submit" class="btn btn-primary">Filter</button>
+    </div>
+    {{if .HasFilters}}
+    <div class="field">
+      <label>&nbsp;</label>
+      <a href="/admin/ui/audit" class="btn">Clear</a>
+    </div>
+    {{end}}
+  </form>
+
+  {{if .Entries}}
+  <table>
+    <thead><tr><th>Time</th><th>Caller</th><th>Key</th><th>Method</th><th>Tool</th><th>Upstream</th><th>Status</th><th>Latency</th><th>Trace</th></tr></thead>
+    <tbody>
+    {{range .Entries}}
+    <tr class="detail-row" onclick="var el=this.nextElementSibling;el.classList.toggle('open')">
+      <td class="mono" style="font-size:.75rem;white-space:nowrap">{{.Timestamp.Format "01-02 15:04:05"}}</td>
+      <td>{{.Caller}}</td>
+      <td>{{if .KeyLabel}}{{.KeyLabel}}{{else}}<span style="color:#94a3b8">-</span>{{end}}</td>
+      <td class="mono" style="font-size:.75rem">{{.Method}}</td>
+      <td class="mono">{{if .Tool}}{{.Tool}}{{else}}<span style="color:#94a3b8">-</span>{{end}}</td>
+      <td class="mono">{{if .Upstream}}{{.Upstream}}{{else}}<span style="color:#94a3b8">-</span>{{end}}</td>
+      <td>{{if eq .Status "ok"}}<span class="badge badge-green">ok</span>{{else}}<span class="badge badge-red">{{.Status}}</span>{{end}}</td>
+      <td class="mono" style="text-align:right">{{.LatencyMS}}ms</td>
+      <td class="mono" style="font-size:.7rem">{{if .TraceID}}<span title="{{.TraceID}}" style="cursor:pointer" onclick="event.stopPropagation();var s=this,o=s.textContent;navigator.clipboard.writeText('{{.TraceID}}');s.textContent='copied!';setTimeout(function(){s.textContent=o},1000)">{{slice .TraceID 0 8}}&hellip;</span>{{else}}<span style="color:#94a3b8">-</span>{{end}}</td>
+    </tr>
+    <tr class="detail-expand">
+      <td colspan="9">
+        {{if .Params}}<pre style="margin:.5rem 0;font-size:.75rem">{{.ParamsFormatted}}</pre>{{else}}<span style="color:#94a3b8;font-size:.8125rem">No params</span>{{end}}
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <div class="pagination">
+    {{if gt .Offset 0}}
+    <a href="/admin/ui/audit?{{.PrevQuery}}" class="btn btn-sm">&larr; Prev</a>
+    {{end}}
+    {{if .HasMore}}
+    <a href="/admin/ui/audit?{{.NextQuery}}" class="btn btn-sm">Next &rarr;</a>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="empty">No audit entries found{{if .HasFilters}} matching filters{{end}}.</div>
+  {{end}}
+  {{else}}
+  <div class="empty">Audit logging is not enabled. Enable it in your configuration.</div>
+  {{end}}
+</div>
+{{end}}

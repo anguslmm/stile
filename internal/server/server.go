@@ -81,7 +81,7 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 				ctx, authSpan = s.tracer.Start(ctx, "auth")
 			}
 
-			caller, err := s.authenticator.Authenticate(r)
+			caller, keyLabel, err := s.authenticator.Authenticate(r)
 			if err != nil {
 				if authSpan != nil {
 					authSpan.SetStatus(codes.Error, "unauthorized")
@@ -95,6 +95,9 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 			}
 			if caller != nil {
 				ctx = auth.ContextWithCaller(ctx, caller)
+				if keyLabel != "" {
+					ctx = auth.ContextWithKeyLabel(ctx, keyLabel)
+				}
 				if authSpan != nil {
 					authSpan.SetAttributes(attribute.String("mcp.caller", caller.Name))
 				}

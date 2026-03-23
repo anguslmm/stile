@@ -1,0 +1,35 @@
+{{define "content"}}
+<div class="card">
+  <h2>Callers</h2>
+  <div style="margin-bottom:1rem">
+    <form class="form-row" method="POST" action="/admin/ui/callers">
+      <input type="text" name="name" placeholder="New caller name" required>
+      <button type="submit" class="btn btn-primary">Add Caller</button>
+    </form>
+  </div>
+  {{if .Flash}}<div class="flash flash-error">{{.Flash}}</div>{{end}}
+  {{if .Callers}}
+  <table>
+    <thead><tr><th>Name</th><th>Keys</th><th>Roles</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+    {{range .Callers}}
+    <tr>
+      <td><a href="/admin/ui/callers/{{.Name}}">{{.Name}}</a></td>
+      <td>{{.KeyCount}}</td>
+      <td>{{range .Roles}}<span class="badge badge-gray" style="margin-right:.25rem">{{.}}</span>{{end}}{{if not .Roles}}<span style="color:#94a3b8">none</span>{{end}}</td>
+      <td class="mono" style="font-size:.75rem">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+      <td>
+        <form method="POST" action="/admin/ui/callers/{{.Name}}/delete" style="display:inline"
+              onsubmit="return confirm('Delete caller {{.Name}}? This cannot be undone.')">
+          <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">No callers configured. Add one above.</div>
+  {{end}}
+</div>
+{{end}}

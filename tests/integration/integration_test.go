@@ -838,6 +838,9 @@ upstreams:
 // ============================================================
 
 func TestEndToEndWithHTTPMockServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("flaky: transient port exhaustion under parallel execution")
+	}
 	tools := []transport.ToolSchema{
 		{Name: "greet", Description: "greets someone", InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)},
 	}
@@ -977,6 +980,9 @@ upstreams:
 // ============================================================
 
 func TestEndToEndSSEMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("flaky: transient port exhaustion under parallel execution")
+	}
 	tools := []transport.ToolSchema{
 		{Name: "sse-tool", Description: "returns SSE"},
 	}

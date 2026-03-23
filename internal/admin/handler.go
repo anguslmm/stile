@@ -9,19 +9,69 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/anguslmm/stile/internal/audit"
 	"github.com/anguslmm/stile/internal/auth"
+	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/health"
 	"github.com/anguslmm/stile/internal/router"
 )
 
+// Option configures optional Handler behavior.
+type Option func(*Handler)
+
+// WithHealthChecker adds upstream health data to the status endpoint.
+func WithHealthChecker(hc *health.Checker) Option {
+	return func(h *Handler) { h.healthChecker = hc }
+}
+
+// WithConfig enables the /admin/config endpoint with a sanitized config view.
+func WithConfig(cfg *config.Config) Option {
+	return func(h *Handler) { h.configView = NewConfigView(cfg) }
+}
+
+// WithStartTime sets the gateway start time for uptime reporting.
+func WithStartTime(t time.Time) Option {
+	return func(h *Handler) { h.startTime = t }
+}
+
+// WithAuditReader enables the /admin/audit query endpoint.
+func WithAuditReader(r audit.Reader) Option {
+	return func(h *Handler) { h.auditReader = r }
+}
+
+// WithAdminKeyHash sets the admin key hash for session-based UI login.
+func WithAdminKeyHash(hash [32]byte) Option {
+	return func(h *Handler) { h.adminKeyHash = hash }
+}
+
 // Handler serves admin API endpoints for caller and key management.
 type Handler struct {
-	store  auth.Store
-	router *router.RouteTable
+	store         auth.Store
+	router        *router.RouteTable
+	healthChecker *health.Checker
+	configView    ConfigView
+	startTime     time.Time
+	auditReader   audit.Reader
+	adminKeyHash  [32]byte
+}
+
+// SessionCheck validates session cookies on incoming requests.
+// Pass this to auth.WithSessionCheck to allow cookie-based admin UI access.
+func (h *Handler) SessionCheck(r *http.Request) bool {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return false
+	}
+	return verifySession(cookie.Value, h.adminKeyHash)
 }
 
 // NewHandler creates an admin handler.
-func NewHandler(store auth.Store, rt *router.RouteTable) *Handler {
-	return &Handler{store: store, router: rt}
+func NewHandler(store auth.Store, rt *router.RouteTable, opts ...Option) *Handler {
+	h := &Handler{store: store, router: rt, startTime: time.Now()}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Register registers all admin routes on the given mux.
@@ -40,6 +90,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/refresh", h.refresh)
 	mux.HandleFunc("GET /admin/cache", h.cacheStats)
 	mux.HandleFunc("DELETE /admin/cache", h.cacheFlush)
+	mux.HandleFunc("GET /admin/config", h.getConfig)
+	mux.HandleFunc("GET /admin/status", h.getStatus)
+	mux.HandleFunc("GET /admin/audit", h.queryAudit)
+	h.registerUI(mux)
 }
 
 func (h *Handler) createCaller(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +375,104 @@ func (h *Handler) cacheFlush(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cache not enabled"})
 }
 
+func (h *Handler) queryAudit(w http.ResponseWriter, r *http.Request) {
+	if h.auditReader == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}, "message": "audit not enabled"})
+		return
+	}
+
+	q := r.URL.Query()
+	filter := audit.QueryFilter{
+		Caller:   q.Get("caller"),
+		Tool:     q.Get("tool"),
+		Upstream: q.Get("upstream"),
+		Status:   q.Get("status"),
+	}
+
+	if v := q.Get("start"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.Start = t
+		}
+	}
+	if v := q.Get("end"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.End = t
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			filter.Limit = n
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			filter.Offset = n
+		}
+	}
+
+	entries, err := h.auditReader.Query(r.Context(), filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("audit query failed"))
+		return
+	}
+
+	items := make([]auditEntryItem, len(entries))
+	for i, e := range entries {
+		items[i] = auditEntryItem{
+			ID:        e.ID,
+			Timestamp: e.Timestamp,
+			Caller:    e.Caller,
+			Method:    e.Method,
+			Tool:      e.Tool,
+			Upstream:  e.Upstream,
+			Params:    e.Params,
+			Status:    e.Status,
+			LatencyMS: e.LatencyMS,
+			TraceID:   e.TraceID,
+			KeyLabel:  e.KeyLabel,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": items})
+}
+
+func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.configView)
+}
+
+func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.buildStatus())
+}
+
 // --- Response types ---
+
+type statusResponse struct {
+	Upstreams     []upstreamStatusItem `json:"upstreams"`
+	CallersCount  int                  `json:"callers_count"`
+	UptimeSeconds int64                `json:"uptime_seconds"`
+}
+
+type upstreamStatusItem struct {
+	Name        string `json:"name"`
+	Healthy     bool   `json:"healthy"`
+	ToolsCached int    `json:"tools_cached"`
+	Stale       bool   `json:"stale"`
+}
+
+type auditEntryItem struct {
+	ID        int64           `json:"id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Caller    string          `json:"caller"`
+	Method    string          `json:"method"`
+	Tool      string          `json:"tool,omitempty"`
+	Upstream  string          `json:"upstream,omitempty"`
+	Params    json.RawMessage `json:"params,omitempty"`
+	Status    string          `json:"status"`
+	LatencyMS int64           `json:"latency_ms"`
+	TraceID   string          `json:"trace_id,omitempty"`
+	KeyLabel  string          `json:"key_label,omitempty"`
+}
+
+// --- Caller response types ---
 
 type callerSummary struct {
 	Name      string    `json:"name"`

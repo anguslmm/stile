@@ -34,7 +34,14 @@ func (c *Caller) CanAccessTool(toolName string) bool {
 	return false
 }
 
+// KeyLookupResult is returned by LookupByKey with both caller identity and key metadata.
+type KeyLookupResult struct {
+	Caller   *Caller
+	KeyLabel string
+}
+
 type contextKey struct{}
+type keyLabelKey struct{}
 
 // CallerFromContext retrieves the Caller from the request context.
 // Returns nil if no caller is set (auth disabled).
@@ -48,9 +55,21 @@ func ContextWithCaller(ctx context.Context, c *Caller) context.Context {
 	return context.WithValue(ctx, contextKey{}, c)
 }
 
+// KeyLabelFromContext retrieves the API key label from the request context.
+// Returns "" if no key label is set.
+func KeyLabelFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(keyLabelKey{}).(string)
+	return s
+}
+
+// ContextWithKeyLabel returns a new context with the given key label attached.
+func ContextWithKeyLabel(ctx context.Context, label string) context.Context {
+	return context.WithValue(ctx, keyLabelKey{}, label)
+}
+
 // CallerStore looks up callers by API key hash.
 type CallerStore interface {
-	LookupByKey(hashedKey [32]byte) (*Caller, error)
+	LookupByKey(hashedKey [32]byte) (*KeyLookupResult, error)
 	RolesForCaller(name string) ([]string, error)
 }
 
@@ -105,32 +124,35 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 }
 
 // Authenticate extracts and validates bearer token from the request.
-func (a *Authenticator) Authenticate(r *http.Request) (*Caller, error) {
+// Returns the caller, the label of the key used, and any error.
+func (a *Authenticator) Authenticate(r *http.Request) (*Caller, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return nil, fmt.Errorf("missing Authorization header")
+		return nil, "", fmt.Errorf("missing Authorization header")
 	}
 	if !strings.HasPrefix(header, "Bearer ") {
-		return nil, fmt.Errorf("Authorization header must use Bearer scheme")
+		return nil, "", fmt.Errorf("Authorization header must use Bearer scheme")
 	}
 
 	token := strings.TrimPrefix(header, "Bearer ")
 	hash := sha256.Sum256([]byte(token))
 
-	caller, err := a.store.LookupByKey(hash)
+	result, err := a.store.LookupByKey(hash)
 	if err != nil {
-		return nil, fmt.Errorf("unauthorized")
+		return nil, "", fmt.Errorf("unauthorized")
 	}
+
+	caller := result.Caller
 
 	// Get all roles assigned to this caller and order by config order.
 	roles, err := a.store.RolesForCaller(caller.Name)
 	if err != nil {
-		return nil, fmt.Errorf("lookup roles: %w", err)
+		return nil, "", fmt.Errorf("lookup roles: %w", err)
 	}
 	caller.Roles = a.orderByConfig(roles)
 	caller.AllowedTools = a.unionAllowedTools(caller.Roles)
 
-	return caller, nil
+	return caller, result.KeyLabel, nil
 }
 
 // unionAllowedTools computes the union of glob patterns across the given roles.
@@ -177,7 +199,7 @@ func (a *Authenticator) orderByConfig(roles []string) []string {
 // Middleware returns HTTP middleware that authenticates requests.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		caller, err := a.Authenticate(r)
+		caller, _, err := a.Authenticate(r)
 		if err != nil {
 			writeJSONRPCError(w, -32000, "unauthorized")
 			return
@@ -189,15 +211,41 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// AdminAuthOption configures AdminAuthMiddleware behavior.
+type AdminAuthOption func(*adminAuthConfig)
+
+type adminAuthConfig struct {
+	sessionCheck func(*http.Request) bool
+}
+
+// WithSessionCheck adds an alternative auth check (e.g. session cookies).
+// If the Bearer token is missing or invalid but sessionCheck returns true,
+// the request is allowed through.
+func WithSessionCheck(fn func(*http.Request) bool) AdminAuthOption {
+	return func(c *adminAuthConfig) { c.sessionCheck = fn }
+}
+
 // AdminAuthMiddleware returns middleware that protects admin endpoints.
 // When devMode is true and no admin key is configured, admin endpoints are open.
 // When devMode is false and no admin key is configured, admin endpoints always return 403.
-func AdminAuthMiddleware(adminKeyHash [32]byte, devMode bool) func(http.Handler) http.Handler {
+// The login/logout UI routes are always exempt so browsers can authenticate.
+func AdminAuthMiddleware(adminKeyHash [32]byte, devMode bool, opts ...AdminAuthOption) func(http.Handler) http.Handler {
 	zeroHash := [32]byte{}
 	hasAdminKey := subtle.ConstantTimeCompare(adminKeyHash[:], zeroHash[:]) != 1
 
+	var cfg adminAuthConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Login and logout routes are always accessible.
+			if r.URL.Path == "/admin/ui/login" || r.URL.Path == "/admin/ui/logout" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			if !hasAdminKey {
 				if !devMode {
 					writeForbidden(w)
@@ -208,18 +256,30 @@ func AdminAuthMiddleware(adminKeyHash [32]byte, devMode bool) func(http.Handler)
 				return
 			}
 
+			// Try Bearer token first.
 			header := r.Header.Get("Authorization")
-			if !strings.HasPrefix(header, "Bearer ") {
-				writeForbidden(w)
+			if strings.HasPrefix(header, "Bearer ") {
+				token := strings.TrimPrefix(header, "Bearer ")
+				hash := sha256.Sum256([]byte(token))
+				if subtle.ConstantTimeCompare(hash[:], adminKeyHash[:]) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			// Try session cookie if configured.
+			if cfg.sessionCheck != nil && cfg.sessionCheck(r) {
+				next.ServeHTTP(w, r)
 				return
 			}
-			token := strings.TrimPrefix(header, "Bearer ")
-			hash := sha256.Sum256([]byte(token))
-			if subtle.ConstantTimeCompare(hash[:], adminKeyHash[:]) != 1 {
-				writeForbidden(w)
+
+			// For UI routes, redirect to login instead of returning 403.
+			if strings.HasPrefix(r.URL.Path, "/admin/ui/") {
+				http.Redirect(w, r, "/admin/ui/login", http.StatusFound)
 				return
 			}
-			next.ServeHTTP(w, r)
+
+			writeForbidden(w)
 		})
 	}
 }

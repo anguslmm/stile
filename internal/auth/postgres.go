@@ -75,18 +75,19 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	return &PostgresStore{db: db}, nil
 }
 
-func (s *PostgresStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
+func (s *PostgresStore) LookupByKey(hashedKey [32]byte) (*KeyLookupResult, error) {
 	var name string
+	var label sql.NullString
 	err := s.db.QueryRow(`
-		SELECT c.name
+		SELECT c.name, k.label
 		FROM api_keys k
 		JOIN callers c ON c.id = k.caller_id
 		WHERE k.key_hash = $1
-	`, hashedKey[:]).Scan(&name)
+	`, hashedKey[:]).Scan(&name, &label)
 	if err != nil {
 		return nil, fmt.Errorf("auth: key not found: %w", ErrNotFound)
 	}
-	return &Caller{Name: name}, nil
+	return &KeyLookupResult{Caller: &Caller{Name: name}, KeyLabel: label.String}, nil
 }
 
 func (s *PostgresStore) RolesForCaller(name string) ([]string, error) {

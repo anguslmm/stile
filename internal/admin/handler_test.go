@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-
-	"github.com/anguslmm/stile/internal/testutil"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/anguslmm/stile/internal/testutil"
+
+	"github.com/anguslmm/stile/internal/audit"
 	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
@@ -340,12 +342,12 @@ func TestCreateKey(t *testing.T) {
 
 	// Verify key hash is in the DB by looking up.
 	hash := sha256.Sum256([]byte(body.Key))
-	caller, err := store.LookupByKey(hash)
+	result, err := store.LookupByKey(hash)
 	if err != nil {
 		t.Fatalf("key not found in DB: %v", err)
 	}
-	if caller.Name != "angus" {
-		t.Errorf("expected angus, got %q", caller.Name)
+	if result.Caller.Name != "angus" {
+		t.Errorf("expected angus, got %q", result.Caller.Name)
 	}
 }
 
@@ -692,6 +694,178 @@ func TestRefreshEndpoint(t *testing.T) {
 	readJSON(t, resp, &body)
 	if _, ok := body.Upstreams["test"]; !ok {
 		t.Error("expected 'test' upstream in refresh result")
+	}
+}
+
+// --- Test: Config endpoint ---
+
+func TestGetConfig(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte(`
+server:
+  address: ":9090"
+upstreams:
+  - name: test
+    transport: streamable-http
+    url: http://fake
+roles:
+  dev:
+    allowed_tools: ["*"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	h := NewHandler(store, rt, WithConfig(cfg))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	ts := testutil.NewServer(mux)
+	defer ts.Close()
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/config", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var cv ConfigView
+	readJSON(t, resp, &cv)
+	if cv.Server.Address != ":9090" {
+		t.Errorf("expected address :9090, got %q", cv.Server.Address)
+	}
+	if len(cv.Upstreams) != 1 || cv.Upstreams[0].Name != "test" {
+		t.Errorf("expected 1 upstream named test, got %v", cv.Upstreams)
+	}
+	if len(cv.Roles) != 1 || cv.Roles[0].Name != "dev" {
+		t.Errorf("expected 1 role named dev, got %v", cv.Roles)
+	}
+}
+
+// --- Test: Status endpoint ---
+
+func TestGetStatus(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+	store.AddCaller("alice")
+	store.AddCaller("bob")
+
+	h := NewHandler(store, rt, WithStartTime(time.Now().Add(-60*time.Second)))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	ts := testutil.NewServer(mux)
+	defer ts.Close()
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/status", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var status statusResponse
+	readJSON(t, resp, &status)
+	if status.CallersCount != 2 {
+		t.Errorf("expected 2 callers, got %d", status.CallersCount)
+	}
+	if status.UptimeSeconds < 59 {
+		t.Errorf("expected uptime >= 59s, got %d", status.UptimeSeconds)
+	}
+}
+
+// --- Test: Audit endpoint ---
+
+func TestQueryAudit(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+
+	auditStore, err := audit.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditStore.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	auditStore.Log(ctx, audit.Entry{Timestamp: now.Add(-2 * time.Hour), Caller: "alice", Method: "tools/call", Tool: "search", Upstream: "up-a", Status: "ok", LatencyMS: 10})
+	auditStore.Log(ctx, audit.Entry{Timestamp: now.Add(-1 * time.Hour), Caller: "bob", Method: "tools/call", Tool: "fetch", Upstream: "up-b", Status: "error", LatencyMS: 200})
+	auditStore.Log(ctx, audit.Entry{Timestamp: now, Caller: "alice", Method: "tools/list", Status: "ok", LatencyMS: 5})
+
+	h := NewHandler(store, rt, WithAuditReader(auditStore))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	ts := testutil.NewServer(mux)
+	defer ts.Close()
+
+	t.Run("all entries", func(t *testing.T) {
+		resp := doRequest(t, "GET", ts.URL+"/admin/audit", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var body struct {
+			Entries []auditEntryItem `json:"entries"`
+		}
+		readJSON(t, resp, &body)
+		if len(body.Entries) != 3 {
+			t.Fatalf("expected 3 entries, got %d", len(body.Entries))
+		}
+	})
+
+	t.Run("filter by caller", func(t *testing.T) {
+		resp := doRequest(t, "GET", ts.URL+"/admin/audit?caller=alice", nil)
+		var body struct {
+			Entries []auditEntryItem `json:"entries"`
+		}
+		readJSON(t, resp, &body)
+		if len(body.Entries) != 2 {
+			t.Fatalf("expected 2 entries for alice, got %d", len(body.Entries))
+		}
+	})
+
+	t.Run("filter by status", func(t *testing.T) {
+		resp := doRequest(t, "GET", ts.URL+"/admin/audit?status=error", nil)
+		var body struct {
+			Entries []auditEntryItem `json:"entries"`
+		}
+		readJSON(t, resp, &body)
+		if len(body.Entries) != 1 {
+			t.Fatalf("expected 1 error entry, got %d", len(body.Entries))
+		}
+	})
+
+	t.Run("limit", func(t *testing.T) {
+		resp := doRequest(t, "GET", ts.URL+"/admin/audit?limit=1", nil)
+		var body struct {
+			Entries []auditEntryItem `json:"entries"`
+		}
+		readJSON(t, resp, &body)
+		if len(body.Entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(body.Entries))
+		}
+	})
+}
+
+func TestQueryAuditNotEnabled(t *testing.T) {
+	store := newTestStore(t)
+	rt := newTestRouter(t)
+
+	h := NewHandler(store, rt) // no WithAuditReader
+	mux := http.NewServeMux()
+	h.Register(mux)
+	ts := testutil.NewServer(mux)
+	defer ts.Close()
+
+	resp := doRequest(t, "GET", ts.URL+"/admin/audit", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Entries []auditEntryItem `json:"entries"`
+		Message string           `json:"message"`
+	}
+	readJSON(t, resp, &body)
+	if len(body.Entries) != 0 {
+		t.Errorf("expected empty entries, got %d", len(body.Entries))
+	}
+	if body.Message != "audit not enabled" {
+		t.Errorf("expected message 'audit not enabled', got %q", body.Message)
 	}
 }
 

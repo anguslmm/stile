@@ -47,7 +47,7 @@ type CachedStore struct {
 	notify CacheNotifyFunc  // nil = no cross-instance notification
 
 	keyMu        sync.RWMutex
-	byKeyHash    map[[32]byte]cachedEntry[*Caller]
+	byKeyHash    map[[32]byte]cachedEntry[*KeyLookupResult]
 	reverseIndex map[string]map[[32]byte]struct{} // callerName → set of cached key hashes
 
 	roleMu     sync.RWMutex
@@ -72,7 +72,7 @@ func NewCachedStore(inner Store, ttl time.Duration) Store {
 		inner:        inner,
 		ttl:          ttl,
 		now:          time.Now,
-		byKeyHash:    make(map[[32]byte]cachedEntry[*Caller]),
+		byKeyHash:    make(map[[32]byte]cachedEntry[*KeyLookupResult]),
 		reverseIndex: make(map[string]map[[32]byte]struct{}),
 		rolesByName:  make(map[string]cachedEntry[[]string]),
 	}
@@ -92,7 +92,7 @@ func (c *CachedStore) sendNotify(kind, callerName string) {
 
 // --- CallerStore (hot path) ---
 
-func (c *CachedStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
+func (c *CachedStore) LookupByKey(hashedKey [32]byte) (*KeyLookupResult, error) {
 	now := c.now()
 
 	c.keyMu.RLock()
@@ -105,24 +105,24 @@ func (c *CachedStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
 	}
 
 	c.keyMisses.Add(1)
-	caller, err := c.inner.LookupByKey(hashedKey)
+	result, err := c.inner.LookupByKey(hashedKey)
 	if err != nil {
 		return nil, err
 	}
 
 	c.keyMu.Lock()
-	c.byKeyHash[hashedKey] = cachedEntry[*Caller]{
-		value:     caller,
+	c.byKeyHash[hashedKey] = cachedEntry[*KeyLookupResult]{
+		value:     result,
 		expiresAt: now.Add(c.ttl),
 	}
 	// Build reverse index: callerName → set of key hashes.
-	if c.reverseIndex[caller.Name] == nil {
-		c.reverseIndex[caller.Name] = make(map[[32]byte]struct{})
+	if c.reverseIndex[result.Caller.Name] == nil {
+		c.reverseIndex[result.Caller.Name] = make(map[[32]byte]struct{})
 	}
-	c.reverseIndex[caller.Name][hashedKey] = struct{}{}
+	c.reverseIndex[result.Caller.Name][hashedKey] = struct{}{}
 	c.keyMu.Unlock()
 
-	return caller, nil
+	return result, nil
 }
 
 func (c *CachedStore) RolesForCaller(name string) ([]string, error) {
@@ -308,7 +308,7 @@ func (c *CachedStore) Flush() {
 func (c *CachedStore) flushLocal() {
 	c.keyMu.Lock()
 	evicted := len(c.byKeyHash)
-	c.byKeyHash = make(map[[32]byte]cachedEntry[*Caller])
+	c.byKeyHash = make(map[[32]byte]cachedEntry[*KeyLookupResult])
 	c.reverseIndex = make(map[string]map[[32]byte]struct{})
 	c.keyMu.Unlock()
 

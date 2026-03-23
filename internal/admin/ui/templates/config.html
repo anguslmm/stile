@@ -1,0 +1,7 @@
+{{define "content"}}
+<div class="card">
+  <h2>Running Configuration</h2>
+  <p style="font-size:.8125rem;color:#64748b;margin-bottom:1rem">Read-only view of the active gateway configuration. Sensitive values are redacted.</p>
+  <pre><code>{{.ConfigJSON}}</code></pre>
+</div>
+{{end}}

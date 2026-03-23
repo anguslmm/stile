@@ -1,6 +1,6 @@
 # Task 30 — Admin dashboard (embedded web UI)
 
-Status: **todo**
+Status: **done**
 
 ## Goal
 

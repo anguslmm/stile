@@ -190,12 +190,12 @@ func TestRevokeKey(t *testing.T) {
 	}
 
 	// Remaining key should still work.
-	caller, err := store.LookupByKey(h2)
+	result, err := store.LookupByKey(h2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "alice" {
-		t.Errorf("expected alice, got %q", caller.Name)
+	if result.Caller.Name != "alice" {
+		t.Errorf("expected alice, got %q", result.Caller.Name)
 	}
 }
 

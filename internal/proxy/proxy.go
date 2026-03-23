@@ -272,6 +272,10 @@ func (h *Handler) recordRequest(ctx context.Context, callerName, method, tool, u
 			Status:    status,
 			LatencyMS: latency.Milliseconds(),
 		}
+		if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsSampled() {
+			entry.TraceID = sc.TraceID().String()
+		}
+		entry.KeyLabel = auth.KeyLabelFromContext(ctx)
 		if err := h.auditStore.Log(ctx, entry); err != nil {
 			slog.Error("audit log write failed", "error", err)
 		}

@@ -48,19 +48,22 @@ func TestAddCallerAndLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	caller, err := store.LookupByKey(hash)
+	result, err := store.LookupByKey(hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "alice" {
-		t.Errorf("name = %q, want alice", caller.Name)
+	if result.Caller.Name != "alice" {
+		t.Errorf("name = %q, want alice", result.Caller.Name)
+	}
+	if result.KeyLabel != "alice-web" {
+		t.Errorf("key label = %q, want alice-web", result.KeyLabel)
 	}
 	// LookupByKey returns name only — no roles or AllowedTools.
-	if len(caller.Roles) != 0 {
-		t.Errorf("expected no Roles from store, got %d", len(caller.Roles))
+	if len(result.Caller.Roles) != 0 {
+		t.Errorf("expected no Roles from store, got %d", len(result.Caller.Roles))
 	}
-	if len(caller.AllowedTools) != 0 {
-		t.Errorf("expected no AllowedTools from store, got %d", len(caller.AllowedTools))
+	if len(result.Caller.AllowedTools) != 0 {
+		t.Errorf("expected no AllowedTools from store, got %d", len(result.Caller.AllowedTools))
 	}
 }
 
@@ -94,20 +97,20 @@ func TestMultipleKeysSameCaller(t *testing.T) {
 	}
 
 	// Both keys resolve to the same caller.
-	caller, err := store.LookupByKey(webHash)
+	result, err := store.LookupByKey(webHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "bob" {
-		t.Errorf("web key caller = %q, want bob", caller.Name)
+	if result.Caller.Name != "bob" {
+		t.Errorf("web key caller = %q, want bob", result.Caller.Name)
 	}
 
-	caller, err = store.LookupByKey(dbHash)
+	result, err = store.LookupByKey(dbHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "bob" {
-		t.Errorf("db key caller = %q, want bob", caller.Name)
+	if result.Caller.Name != "bob" {
+		t.Errorf("db key caller = %q, want bob", result.Caller.Name)
 	}
 }
 
@@ -131,20 +134,20 @@ func TestMultipleCallers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	alice, err := store.LookupByKey(aliceHash)
+	result, err := store.LookupByKey(aliceHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if alice.Name != "alice" {
-		t.Errorf("expected alice, got %q", alice.Name)
+	if result.Caller.Name != "alice" {
+		t.Errorf("expected alice, got %q", result.Caller.Name)
 	}
 
-	bob, err := store.LookupByKey(bobHash)
+	result, err = store.LookupByKey(bobHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bob.Name != "bob" {
-		t.Errorf("expected bob, got %q", bob.Name)
+	if result.Caller.Name != "bob" {
+		t.Errorf("expected bob, got %q", result.Caller.Name)
 	}
 }
 
@@ -328,12 +331,12 @@ func TestAddKeyWithoutRole(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	caller, err := store.LookupByKey(hash)
+	result, err := store.LookupByKey(hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "alice" {
-		t.Errorf("expected alice, got %q", caller.Name)
+	if result.Caller.Name != "alice" {
+		t.Errorf("expected alice, got %q", result.Caller.Name)
 	}
 }
 
@@ -384,7 +387,7 @@ roles:
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	caller, err := auth.Authenticate(req)
+	caller, _, err := auth.Authenticate(req)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -439,7 +442,7 @@ roles:
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	caller, err := auth.Authenticate(req)
+	caller, _, err := auth.Authenticate(req)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -489,7 +492,7 @@ roles:
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	caller, err := auth.Authenticate(req)
+	caller, _, err := auth.Authenticate(req)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -614,7 +617,7 @@ roles:
 
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
-	caller, err := auth.Authenticate(req)
+	caller, _, err := auth.Authenticate(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +701,7 @@ roles:
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	caller, err := auth.Authenticate(req)
+	caller, _, err := auth.Authenticate(req)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -725,7 +728,7 @@ func TestInvalidKeyRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer sk-wrong-key")
 
-	_, err := auth.Authenticate(req)
+	_, _, err := auth.Authenticate(req)
 	if err == nil {
 		t.Fatal("expected error for invalid key")
 	}
@@ -744,7 +747,7 @@ func TestMissingHeaderRejected(t *testing.T) {
 	auth := NewAuthenticator(store, nil)
 
 	req := httptest.NewRequest("POST", "/mcp", nil)
-	_, err := auth.Authenticate(req)
+	_, _, err := auth.Authenticate(req)
 	if err == nil {
 		t.Fatal("expected error for missing Authorization header")
 	}
@@ -764,7 +767,7 @@ func TestMalformedHeaderRejected(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-	_, err := auth.Authenticate(req)
+	_, _, err := auth.Authenticate(req)
 	if err == nil {
 		t.Fatal("expected error for non-Bearer Authorization")
 	}
@@ -776,7 +779,7 @@ func TestAuthAlwaysRequiresToken(t *testing.T) {
 
 	// Even with no callers in the database, missing Authorization header is rejected.
 	req := httptest.NewRequest("POST", "/mcp", nil)
-	_, err := auth.Authenticate(req)
+	_, _, err := auth.Authenticate(req)
 	if err == nil {
 		t.Fatal("expected error for missing Authorization header when auth is enabled")
 	}
@@ -1019,6 +1022,66 @@ func TestAdminDevModeAllowsWithoutKey(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 in dev mode, got %d", w.Code)
+	}
+}
+
+func TestAdminUIRedirectsToLogin(t *testing.T) {
+	adminHash := sha256.Sum256([]byte("admin-key"))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AdminAuthMiddleware(adminHash, false)(inner)
+
+	// UI route without auth should redirect to login.
+	req := httptest.NewRequest("GET", "/admin/ui/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("expected 302 redirect, got %d", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/admin/ui/login" {
+		t.Errorf("expected redirect to /admin/ui/login, got %q", loc)
+	}
+}
+
+func TestAdminUILoginExemptFromAuth(t *testing.T) {
+	adminHash := sha256.Sum256([]byte("admin-key"))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AdminAuthMiddleware(adminHash, false)(inner)
+
+	// Login route should pass through without auth.
+	req := httptest.NewRequest("GET", "/admin/ui/login", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for login page, got %d", w.Code)
+	}
+}
+
+func TestAdminAPIStillReturns403(t *testing.T) {
+	adminHash := sha256.Sum256([]byte("admin-key"))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AdminAuthMiddleware(adminHash, false)(inner)
+
+	// API route without auth should get 403, not redirect.
+	req := httptest.NewRequest("GET", "/admin/callers", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for API route, got %d", w.Code)
 	}
 }
 

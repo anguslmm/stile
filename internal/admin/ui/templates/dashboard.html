@@ -1,0 +1,43 @@
+{{define "content"}}
+<div class="grid" style="margin-bottom:1rem">
+  <div class="card">
+    <div class="stat">
+      <div class="value">{{.Status.CallersCount}}</div>
+      <div class="label">Callers</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="stat">
+      <div class="value">{{len .Status.Upstreams}}</div>
+      <div class="label">Upstreams</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="stat">
+      <div class="value">{{.Uptime}}</div>
+      <div class="label">Uptime</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Upstream Health</h2>
+  {{if .Status.Upstreams}}
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Tools</th><th>Stale</th></tr></thead>
+    <tbody>
+    {{range .Status.Upstreams}}
+    <tr>
+      <td class="mono">{{.Name}}</td>
+      <td>{{if .Healthy}}<span class="badge badge-green">healthy</span>{{else}}<span class="badge badge-red">unhealthy</span>{{end}}</td>
+      <td>{{.ToolsCached}}</td>
+      <td>{{if .Stale}}<span class="badge badge-yellow">stale</span>{{else}}<span class="badge badge-gray">fresh</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">No upstreams configured</div>
+  {{end}}
+</div>
+{{end}}

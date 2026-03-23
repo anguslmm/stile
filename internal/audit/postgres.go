@@ -19,11 +19,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     upstream   TEXT,
     params     TEXT,
     status     TEXT NOT NULL,
-    latency_ms INTEGER NOT NULL
+    latency_ms INTEGER NOT NULL,
+    trace_id   TEXT,
+    key_label  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_log_caller ON audit_log(caller);
 `
+
+const pgMigrateTraceID = `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS trace_id TEXT`
+const pgMigrateKeyLabel = `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS key_label TEXT`
 
 var _ Store = (*PostgresStore)(nil)
 
@@ -55,6 +60,10 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("audit: acquire migration lock: %w", err)
 	}
 	_, migErr := db.Exec(pgSchema)
+	if migErr == nil {
+		db.Exec(pgMigrateTraceID)
+		db.Exec(pgMigrateKeyLabel)
+	}
 	db.Exec("SELECT pg_advisory_unlock(43)")
 	if migErr != nil {
 		db.Close()
@@ -71,12 +80,25 @@ func (s *PostgresStore) Log(ctx context.Context, entry Entry) error {
 		p := string(entry.Params)
 		params = &p
 	}
+	var traceID *string
+	if entry.TraceID != "" {
+		traceID = &entry.TraceID
+	}
+	var keyLabel *string
+	if entry.KeyLabel != "" {
+		keyLabel = &entry.KeyLabel
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit_log (timestamp, caller, method, tool, upstream, params, status, latency_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		entry.Timestamp, entry.Caller, entry.Method, entry.Tool, entry.Upstream, params, entry.Status, entry.LatencyMS,
+		`INSERT INTO audit_log (timestamp, caller, method, tool, upstream, params, status, latency_ms, trace_id, key_label)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		entry.Timestamp, entry.Caller, entry.Method, entry.Tool, entry.Upstream, params, entry.Status, entry.LatencyMS, traceID, keyLabel,
 	)
 	return err
+}
+
+// Query reads audit log entries matching the filter.
+func (s *PostgresStore) Query(ctx context.Context, filter QueryFilter) ([]Entry, error) {
+	return queryDB(ctx, s.db, filter, "$")
 }
 
 // Close closes the underlying database connection.

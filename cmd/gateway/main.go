@@ -142,7 +142,31 @@ func main() {
 
 	// Create admin handler if auth is configured (store is available).
 	if callerStore != nil {
-		opts.AdminHandler = admin.NewHandler(callerStore, rt)
+		adminKey := os.Getenv("ADMIN_API_KEY")
+		var adminKeyHash [32]byte
+		if adminKey != "" {
+			adminKeyHash = sha256.Sum256([]byte(adminKey))
+		}
+
+		adminOpts := []admin.Option{
+			admin.WithHealthChecker(healthChecker),
+			admin.WithConfig(cfg),
+			admin.WithStartTime(time.Now()),
+			admin.WithAdminKeyHash(adminKeyHash),
+		}
+		if auditStore != nil {
+			if reader, ok := auditStore.(audit.Reader); ok {
+				adminOpts = append(adminOpts, admin.WithAuditReader(reader))
+			}
+		}
+		adminHandler := admin.NewHandler(callerStore, rt, adminOpts...)
+		opts.AdminHandler = adminHandler
+
+		// Rebuild admin auth middleware with session check for browser UI.
+		if opts.AdminAuth != nil {
+			opts.AdminAuth = auth.AdminAuthMiddleware(adminKeyHash, *devMode,
+				auth.WithSessionCheck(adminHandler.SessionCheck))
+		}
 	}
 
 	srv := server.New(cfg, handler, rt, m, opts)

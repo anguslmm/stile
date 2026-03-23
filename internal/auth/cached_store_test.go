@@ -28,7 +28,7 @@ func newMockStore() *mockStore {
 	}
 }
 
-func (m *mockStore) LookupByKey(h [32]byte) (*Caller, error) {
+func (m *mockStore) LookupByKey(h [32]byte) (*KeyLookupResult, error) {
 	m.lookupCalls.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -36,7 +36,7 @@ func (m *mockStore) LookupByKey(h [32]byte) (*Caller, error) {
 	if !ok {
 		return nil, fmt.Errorf("auth: key not found: %w", ErrNotFound)
 	}
-	return &Caller{Name: name}, nil
+	return &KeyLookupResult{Caller: &Caller{Name: name}}, nil
 }
 
 func (m *mockStore) RolesForCaller(name string) ([]string, error) {
@@ -113,24 +113,24 @@ func TestCacheHitAvoidsSecondDBCall(t *testing.T) {
 	store := NewCachedStore(mock, 5*time.Minute).(*CachedStore)
 
 	// First call: miss → goes to DB.
-	caller, err := store.LookupByKey(hash)
+	result, err := store.LookupByKey(hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "alice" {
-		t.Fatalf("expected alice, got %q", caller.Name)
+	if result.Caller.Name != "alice" {
+		t.Fatalf("expected alice, got %q", result.Caller.Name)
 	}
 	if mock.lookupCalls.Load() != 1 {
 		t.Fatalf("expected 1 DB call, got %d", mock.lookupCalls.Load())
 	}
 
 	// Second call: hit → no DB call.
-	caller, err = store.LookupByKey(hash)
+	result, err = store.LookupByKey(hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if caller.Name != "alice" {
-		t.Fatalf("expected alice, got %q", caller.Name)
+	if result.Caller.Name != "alice" {
+		t.Fatalf("expected alice, got %q", result.Caller.Name)
 	}
 	if mock.lookupCalls.Load() != 1 {
 		t.Fatalf("expected still 1 DB call (cache hit), got %d", mock.lookupCalls.Load())

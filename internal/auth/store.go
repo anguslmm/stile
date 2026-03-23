@@ -129,20 +129,21 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 // LookupByKey finds a caller by the SHA-256 hash of their API key.
-// Returns the caller name only — roles are resolved separately via RolesForCaller.
-func (s *SQLiteStore) LookupByKey(hashedKey [32]byte) (*Caller, error) {
+// Returns the caller name and key label — roles are resolved separately via RolesForCaller.
+func (s *SQLiteStore) LookupByKey(hashedKey [32]byte) (*KeyLookupResult, error) {
 	var name string
+	var label sql.NullString
 	err := s.db.QueryRow(`
-		SELECT c.name
+		SELECT c.name, k.label
 		FROM api_keys k
 		JOIN callers c ON c.id = k.caller_id
 		WHERE k.key_hash = ?
-	`, hashedKey[:]).Scan(&name)
+	`, hashedKey[:]).Scan(&name, &label)
 	if err != nil {
 		return nil, fmt.Errorf("auth: key not found: %w", ErrNotFound)
 	}
 
-	return &Caller{Name: name}, nil
+	return &KeyLookupResult{Caller: &Caller{Name: name}, KeyLabel: label.String}, nil
 }
 
 // RolesForCaller returns all roles assigned to a caller via the caller_roles table.
