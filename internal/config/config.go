@@ -376,6 +376,7 @@ func (c *Config) Server() ServerConfig {
 		database:        c.server.database,
 		shutdownTimeout: c.server.shutdownTimeout,
 		tls:             c.server.tls,
+		authCacheTTL:    c.server.authCacheTTL,
 	}
 }
 
@@ -454,6 +455,7 @@ type ServerConfig struct {
 	database        DatabaseConfig
 	shutdownTimeout time.Duration
 	tls             *ServerTLSConfig
+	authCacheTTL    time.Duration
 }
 
 // Address returns the listen address (e.g. ":8080").
@@ -475,6 +477,10 @@ func (s ServerConfig) ShutdownTimeout() time.Duration { return s.shutdownTimeout
 
 // TLS returns the server TLS configuration, or nil if TLS is not configured.
 func (s ServerConfig) TLS() *ServerTLSConfig { return s.tls }
+
+// AuthCacheTTL returns the TTL for the in-memory auth cache.
+// Zero means caching is disabled.
+func (s ServerConfig) AuthCacheTTL() time.Duration { return s.authCacheTTL }
 
 // DatabaseConfig provides read-only access to database settings.
 type DatabaseConfig struct {
@@ -579,6 +585,7 @@ type serverConfig struct {
 	database        DatabaseConfig
 	shutdownTimeout time.Duration
 	tls             *ServerTLSConfig
+	authCacheTTL    time.Duration
 }
 
 // RoleConfig provides read-only access to a role's settings.
@@ -704,6 +711,7 @@ type rawServerConfig struct {
 	Database        *rawDatabaseConfig  `yaml:"database"`
 	ShutdownTimeout string              `yaml:"shutdown_timeout"`
 	TLS             *rawServerTLSConfig `yaml:"tls"`
+	AuthCacheTTL    string              `yaml:"auth_cache_ttl"`
 }
 
 type rawUpstreamConfig struct {
@@ -852,6 +860,14 @@ func convert(raw rawConfig) (*Config, error) {
 		cfg.server.shutdownTimeout = st
 	} else {
 		cfg.server.shutdownTimeout = 30 * time.Second
+	}
+
+	if raw.Server.AuthCacheTTL != "" {
+		act, err := time.ParseDuration(raw.Server.AuthCacheTTL)
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid auth_cache_ttl %q: %w", raw.Server.AuthCacheTTL, err)
+		}
+		cfg.server.authCacheTTL = act
 	}
 
 	if raw.Server.TLS != nil {

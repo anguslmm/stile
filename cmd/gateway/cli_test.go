@@ -288,7 +288,7 @@ func startTestAdminServer(t *testing.T) (*auth.SQLiteStore, *httptest.Server) {
 
 	adminKey := "test-admin-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
-	adminMW := auth.AdminAuthMiddleware(adminHash, store, false)
+	adminMW := auth.AdminAuthMiddleware(adminHash, false)
 	ts := httptest.NewServer(adminMW(mux))
 	t.Cleanup(ts.Close)
 

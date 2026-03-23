@@ -293,10 +293,10 @@ func newTestGateway(t *testing.T, opts ...gatewayOpt) *testGateway {
 
 		if b.adminKey != "" {
 			adminHash := sha256.Sum256([]byte(b.adminKey))
-			serverOpts.AdminAuth = auth.AdminAuthMiddleware(adminHash, callerStore, false)
+			serverOpts.AdminAuth = auth.AdminAuthMiddleware(adminHash, false)
 		} else {
 			var zeroHash [32]byte
-			serverOpts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, callerStore, true)
+			serverOpts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, true)
 		}
 	}
 

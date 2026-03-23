@@ -52,7 +52,6 @@ func ContextWithCaller(ctx context.Context, c *Caller) context.Context {
 type CallerStore interface {
 	LookupByKey(hashedKey [32]byte) (*Caller, error)
 	RolesForCaller(name string) ([]string, error)
-	HasCallers() (bool, error)
 }
 
 // Authenticator handles inbound authentication and credential injection.
@@ -106,16 +105,7 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 }
 
 // Authenticate extracts and validates bearer token from the request.
-// Returns nil, nil when auth is disabled (no callers and no roles).
 func (a *Authenticator) Authenticate(r *http.Request) (*Caller, error) {
-	hasCallers, err := a.store.HasCallers()
-	if err != nil {
-		return nil, fmt.Errorf("check callers: %w", err)
-	}
-	if !hasCallers && len(a.credentials) == 0 {
-		return nil, nil
-	}
-
 	header := r.Header.Get("Authorization")
 	if header == "" {
 		return nil, fmt.Errorf("missing Authorization header")
@@ -202,7 +192,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 // AdminAuthMiddleware returns middleware that protects admin endpoints.
 // When devMode is true and no admin key is configured, admin endpoints are open.
 // When devMode is false and no admin key is configured, admin endpoints always return 403.
-func AdminAuthMiddleware(adminKeyHash [32]byte, store CallerStore, devMode bool) func(http.Handler) http.Handler {
+func AdminAuthMiddleware(adminKeyHash [32]byte, devMode bool) func(http.Handler) http.Handler {
 	zeroHash := [32]byte{}
 	hasAdminKey := subtle.ConstantTimeCompare(adminKeyHash[:], zeroHash[:]) != 1
 

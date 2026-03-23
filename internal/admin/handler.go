@@ -38,6 +38,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/callers/{name}/roles", h.listRoles)
 	mux.HandleFunc("DELETE /admin/callers/{name}/roles/{role}", h.deleteRole)
 	mux.HandleFunc("POST /admin/refresh", h.refresh)
+	mux.HandleFunc("GET /admin/cache", h.cacheStats)
+	mux.HandleFunc("DELETE /admin/cache", h.cacheFlush)
 }
 
 func (h *Handler) createCaller(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +302,23 @@ func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	result := h.router.Refresh(r.Context())
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) cacheStats(w http.ResponseWriter, _ *http.Request) {
+	if c, ok := h.store.(auth.Cacheable); ok {
+		writeJSON(w, http.StatusOK, c.Stats())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cache not enabled"})
+}
+
+func (h *Handler) cacheFlush(w http.ResponseWriter, _ *http.Request) {
+	if c, ok := h.store.(auth.Cacheable); ok {
+		c.Flush()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cache not enabled"})
 }
 
 // --- Response types ---

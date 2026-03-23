@@ -24,6 +24,9 @@ type Metrics struct {
 	toolCacheRefresh    otelmetric.Int64Counter
 	circuitState        otelmetric.Float64Gauge
 	retriesTotal        otelmetric.Int64Counter
+	authCacheHits       otelmetric.Int64Counter
+	authCacheMisses     otelmetric.Int64Counter
+	authCacheEvictions  otelmetric.Int64Counter
 	handler             http.Handler
 }
 
@@ -103,6 +106,27 @@ func newMetrics(registerer prometheus.Registerer, gatherer prometheus.Gatherer) 
 		panic("metrics: create stile_retries counter: " + err.Error())
 	}
 
+	authCacheHits, err := meter.Int64Counter("stile_auth_cache_hits",
+		otelmetric.WithDescription("Auth cache hits"),
+	)
+	if err != nil {
+		panic("metrics: create stile_auth_cache_hits counter: " + err.Error())
+	}
+
+	authCacheMisses, err := meter.Int64Counter("stile_auth_cache_misses",
+		otelmetric.WithDescription("Auth cache misses"),
+	)
+	if err != nil {
+		panic("metrics: create stile_auth_cache_misses counter: " + err.Error())
+	}
+
+	authCacheEvictions, err := meter.Int64Counter("stile_auth_cache_evictions",
+		otelmetric.WithDescription("Auth cache evictions"),
+	)
+	if err != nil {
+		panic("metrics: create stile_auth_cache_evictions counter: " + err.Error())
+	}
+
 	return &Metrics{
 		requestsTotal:       requestsTotal,
 		requestDuration:     requestDuration,
@@ -111,6 +135,9 @@ func newMetrics(registerer prometheus.Registerer, gatherer prometheus.Gatherer) 
 		toolCacheRefresh:    toolCacheRefresh,
 		circuitState:        circuitState,
 		retriesTotal:        retriesTotal,
+		authCacheHits:       authCacheHits,
+		authCacheMisses:     authCacheMisses,
+		authCacheEvictions:  authCacheEvictions,
 		handler:             promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}),
 	}
 }
@@ -181,6 +208,33 @@ func (m *Metrics) RecordRetry(upstream string) {
 	m.retriesTotal.Add(nil, 1,
 		otelmetric.WithAttributes(
 			attribute.String("upstream", upstream),
+		),
+	)
+}
+
+// RecordAuthCacheHit increments the auth cache hit counter.
+func (m *Metrics) RecordAuthCacheHit(cacheType string) {
+	m.authCacheHits.Add(nil, 1,
+		otelmetric.WithAttributes(
+			attribute.String("type", cacheType),
+		),
+	)
+}
+
+// RecordAuthCacheMiss increments the auth cache miss counter.
+func (m *Metrics) RecordAuthCacheMiss(cacheType string) {
+	m.authCacheMisses.Add(nil, 1,
+		otelmetric.WithAttributes(
+			attribute.String("type", cacheType),
+		),
+	)
+}
+
+// RecordAuthCacheEviction increments the auth cache eviction counter.
+func (m *Metrics) RecordAuthCacheEviction(cacheType string) {
+	m.authCacheEvictions.Add(nil, 1,
+		otelmetric.WithAttributes(
+			attribute.String("type", cacheType),
 		),
 	)
 }

@@ -23,7 +23,7 @@ func newClientTestServer(t *testing.T) (*Client, *auth.SQLiteStore) {
 
 	adminKey := "test-admin-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
-	adminMW := auth.AdminAuthMiddleware(adminHash, store, false)
+	adminMW := auth.AdminAuthMiddleware(adminHash, false)
 	ts := httptest.NewServer(adminMW(mux))
 	t.Cleanup(ts.Close)
 
@@ -224,7 +224,7 @@ func TestClientAuthRequired(t *testing.T) {
 
 	adminKey := "real-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
-	adminMW := auth.AdminAuthMiddleware(adminHash, store, false)
+	adminMW := auth.AdminAuthMiddleware(adminHash, false)
 	ts := httptest.NewServer(adminMW(mux))
 	defer ts.Close()
 

@@ -169,16 +169,6 @@ func (s *SQLiteStore) RolesForCaller(name string) ([]string, error) {
 	return roles, rows.Err()
 }
 
-// HasCallers reports whether the database contains any callers.
-func (s *SQLiteStore) HasCallers() (bool, error) {
-	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM callers").Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 // AddCaller inserts a new caller (a named identity).
 func (s *SQLiteStore) AddCaller(name string) error {
 	_, err := s.db.Exec("INSERT INTO callers (name) VALUES (?)", name)

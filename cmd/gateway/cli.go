@@ -378,6 +378,71 @@ func runRevokeKey(args []string) {
 	fmt.Printf("Key %q revoked for caller %q.\n", *label, *caller)
 }
 
+func runCacheShow(args []string) {
+	fs := flag.NewFlagSet("cache-show", flag.ExitOnError)
+	flags := addCLIFlags(fs)
+	fs.Parse(args)
+
+	if *flags.remote == "" {
+		fmt.Fprintln(os.Stderr, "error: --remote is required (cache is in-memory on the running gateway)")
+		os.Exit(1)
+	}
+
+	key := *flags.adminKey
+	if key == "" {
+		key = os.Getenv("STILE_ADMIN_KEY")
+	}
+	if key == "" {
+		fmt.Fprintln(os.Stderr, "error: --admin-key or STILE_ADMIN_KEY is required with --remote")
+		os.Exit(1)
+	}
+
+	client := admin.NewClient(*flags.remote, key)
+	stats, err := client.CacheStats()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "METRIC\tVALUE")
+	fmt.Fprintf(w, "Key entries\t%d\n", stats.KeyEntries)
+	fmt.Fprintf(w, "Role entries\t%d\n", stats.RoleEntries)
+	fmt.Fprintf(w, "Key hits\t%d\n", stats.KeyHits)
+	fmt.Fprintf(w, "Key misses\t%d\n", stats.KeyMisses)
+	fmt.Fprintf(w, "Role hits\t%d\n", stats.RoleHits)
+	fmt.Fprintf(w, "Role misses\t%d\n", stats.RoleMisses)
+	fmt.Fprintf(w, "Evictions\t%d\n", stats.Evictions)
+	w.Flush()
+}
+
+func runCacheFlush(args []string) {
+	fs := flag.NewFlagSet("cache-flush", flag.ExitOnError)
+	flags := addCLIFlags(fs)
+	fs.Parse(args)
+
+	if *flags.remote == "" {
+		fmt.Fprintln(os.Stderr, "error: --remote is required (cache is in-memory on the running gateway)")
+		os.Exit(1)
+	}
+
+	key := *flags.adminKey
+	if key == "" {
+		key = os.Getenv("STILE_ADMIN_KEY")
+	}
+	if key == "" {
+		fmt.Fprintln(os.Stderr, "error: --admin-key or STILE_ADMIN_KEY is required with --remote")
+		os.Exit(1)
+	}
+
+	client := admin.NewClient(*flags.remote, key)
+	if err := client.CacheFlush(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Cache flushed.")
+}
+
 func generateAPIKey() (string, error) {
 	return auth.GenerateAPIKey()
 }

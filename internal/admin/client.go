@@ -191,6 +191,36 @@ func (c *Client) UnassignRole(callerName, role string) error {
 	return nil
 }
 
+// CacheStats retrieves cache statistics from the remote admin API.
+func (c *Client) CacheStats() (*auth.CacheStats, error) {
+	resp, err := c.do("GET", "/admin/cache", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readError(resp)
+	}
+	var stats auth.CacheStats
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &stats, nil
+}
+
+// CacheFlush flushes the auth cache on the remote server.
+func (c *Client) CacheFlush() error {
+	resp, err := c.do("DELETE", "/admin/cache", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.readError(resp)
+	}
+	return nil
+}
+
 // Close is a no-op for the HTTP client.
 func (c *Client) Close() error { return nil }
 

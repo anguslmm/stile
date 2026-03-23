@@ -59,6 +59,12 @@ func main() {
 		case "wrap":
 			runWrap(os.Args[2:])
 			return
+		case "cache-show":
+			runCacheShow(os.Args[2:])
+			return
+		case "cache-flush":
+			runCacheFlush(os.Args[2:])
+			return
 		}
 	}
 
@@ -314,10 +320,30 @@ func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Stor
 		return nil, nil
 	}
 
-	store, err := auth.OpenStore(dbCfg)
+	innerStore, err := auth.OpenStore(dbCfg)
 	if err != nil {
 		slog.Error("open caller database failed", "error", err)
 		os.Exit(1)
+	}
+
+	// Wrap with in-memory cache if configured.
+	store := auth.NewCachedStore(innerStore, cfg.Server().AuthCacheTTL())
+
+	// Start Postgres LISTEN/NOTIFY listener for cross-instance cache invalidation.
+	if cached, ok := store.(*auth.CachedStore); ok && dbCfg.Driver() == "postgres" {
+		if pgStore, ok := innerStore.(*auth.PostgresStore); ok {
+			listener, err := auth.NewPGNotifyListener(dbCfg.DSN(), pgStore.DB(), cached)
+			if err != nil {
+				slog.Warn("pg_notify listener failed to start, continuing without cross-instance invalidation", "error", err)
+			} else {
+				cached.SetNotify(listener.NotifyFunc())
+				slog.Info("pg_notify listener started for cross-instance cache invalidation")
+			}
+		}
+	}
+
+	if ttl := cfg.Server().AuthCacheTTL(); ttl > 0 {
+		slog.Info("auth cache enabled", "ttl", ttl)
 	}
 
 	authenticator := auth.NewAuthenticator(store, cfg.Roles())
@@ -330,7 +356,7 @@ func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Stor
 	adminKey := os.Getenv("ADMIN_API_KEY")
 	if adminKey != "" {
 		adminHash := sha256.Sum256([]byte(adminKey))
-		opts.AdminAuth = auth.AdminAuthMiddleware(adminHash, store, devMode)
+		opts.AdminAuth = auth.AdminAuthMiddleware(adminHash, devMode)
 	} else {
 		if !devMode {
 			fmt.Fprintf(os.Stderr, "error: ADMIN_API_KEY not set and --dev not specified; refusing to start with open admin endpoints\n")
@@ -338,7 +364,7 @@ func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Stor
 		}
 		slog.Warn("running in dev mode — admin endpoints are open without authentication")
 		var zeroHash [32]byte
-		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, store, devMode)
+		opts.AdminAuth = auth.AdminAuthMiddleware(zeroHash, devMode)
 	}
 
 	return opts, store

@@ -112,15 +112,6 @@ func (s *PostgresStore) RolesForCaller(name string) ([]string, error) {
 	return roles, rows.Err()
 }
 
-func (s *PostgresStore) HasCallers() (bool, error) {
-	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM callers").Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 func (s *PostgresStore) AddCaller(name string) error {
 	_, err := s.db.Exec("INSERT INTO callers (name) VALUES ($1)", name)
 	if err != nil {
@@ -325,6 +316,10 @@ func (s *PostgresStore) RevokeKey(callerName string, label string) error {
 	}
 	return nil
 }
+
+// DB returns the underlying database connection pool. Used by PGNotifyListener
+// to send NOTIFY messages on the shared connection pool.
+func (s *PostgresStore) DB() *sql.DB { return s.db }
 
 func (s *PostgresStore) Close() error {
 	return s.db.Close()
