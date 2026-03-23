@@ -90,16 +90,24 @@ CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
 ```go
 type Caller struct {
     Name         string
-    AllowedTools []glob.Glob  // compiled glob patterns
-    AuthEnv      string       // resolved from the API key used to authenticate
+    Roles        []string    // all roles assigned to this caller, in config order
+    AllowedTools []glob.Glob // union of all roles' patterns
+}
+
+type KeyLookupResult struct {
+    Caller   *Caller
+    KeyLabel string
 }
 
 type CallerStore interface {
-    LookupByKey(hashedKey [32]byte) (*Caller, error)
+    LookupByKey(hashedKey [32]byte) (*KeyLookupResult, error)
+    RolesForCaller(name string) ([]string, error)
 }
 ```
 
-The `Caller` returned by `LookupByKey` includes the `AuthEnv` from the matched API key row, so the proxy knows which upstream credentials to inject.
+`LookupByKey` returns a `KeyLookupResult` carrying both the `Caller` and the key's label (used for audit logging and metrics). `RolesForCaller` returns the roles assigned to a caller via the `caller_roles` table (see Task 6.2).
+
+**Note:** The original design used per-key `AuthEnv` strings. Task 6.1 replaced auth envs with roles, and Task 6.2 decoupled roles from keys entirely — roles are now assigned to callers, not individual keys.
 
 ### SQLite implementation
 
@@ -147,22 +155,26 @@ The constructor resolves auth env config into actual token values (reading env v
 ### Authentication
 
 ```go
-func (a *Authenticator) Authenticate(r *http.Request) (*Caller, error)
+func (a *Authenticator) Authenticate(r *http.Request) (*Caller, string, error)
 ```
 
-1. If the store has no callers and no auth envs are configured → auth is disabled, return nil, nil
-2. Extract `Authorization: Bearer <token>` header
-3. Hash the token with SHA-256
-4. Look up via `store.LookupByKey(hash)`
-5. If not found → return error
+Returns the authenticated caller, the label of the API key used (for audit/metrics), and any error.
+
+1. Extract `Authorization: Bearer <token>` header
+2. Hash the token with SHA-256
+3. Look up via `store.LookupByKey(hash)`
+4. If not found → return error
+5. Resolve caller's roles via `store.RolesForCaller(name)` and build the `Caller` with ordered roles and union of tool globs
 
 ### Credential injection
 
 ```go
-func (a *Authenticator) UpstreamToken(authEnv, upstreamName string) (string, bool)
+func (a *Authenticator) UpstreamToken(roles []string, upstreamName string) (string, bool)
 ```
 
-Returns the bearer token for a given upstream within the caller's auth env. The proxy calls this when forwarding a request to inject the correct outbound credential.
+Returns the bearer token for a given upstream, checking the caller's roles in config order. The proxy calls this when forwarding a request to inject the correct outbound credential.
+
+**Note:** The original signature took a single `authEnv` string. Task 6.1 replaced auth envs with roles, and Task 6.2 changed this to accept a `[]string` of roles.
 
 ---
 
@@ -213,18 +225,23 @@ The proxy handler retrieves the caller from context to perform tool filtering, a
 Admin endpoints (`POST /admin/refresh`, `POST /admin/reload`) are **outside** the MCP auth middleware. Protected by a single admin API key.
 
 ```go
-func AdminAuthMiddleware(adminKeyHash [32]byte, authEnabled bool) func(http.Handler) http.Handler
+func AdminAuthMiddleware(adminKeyHash [32]byte, devMode bool, opts ...AdminAuthOption) func(http.Handler) http.Handler
 ```
 
-Configuration: the admin key is read from the `ADMIN_API_KEY` environment variable at startup.
+Configuration: the admin key is read from the `ADMIN_API_KEY` environment variable at startup. The `--dev` flag controls dev mode.
+
+Options:
+- `WithSessionCheck(fn func(*http.Request) bool)` — adds an alternative auth check (e.g. session cookies for the web UI, Task 30). If the Bearer token is missing or invalid but `sessionCheck` returns true, the request is allowed through.
 
 Behavior:
-1. Extract `Authorization: Bearer <token>` from the request
-2. Hash with SHA-256 and compare to the stored admin key hash
-3. If valid → call `next`
-4. If invalid → return `403 Forbidden` with JSON body `{"error": "forbidden"}`
-
-**Dev mode:** If `ADMIN_API_KEY` is not set **and** no callers exist in the database, admin endpoints are open. If `ADMIN_API_KEY` is not set **but** callers exist, admin endpoints return `403 Forbidden` unconditionally.
+1. Login/logout UI routes (`/admin/ui/login`, `/admin/ui/logout`) are always exempt
+2. If no admin key is configured and `devMode` is true → allow through
+3. If no admin key is configured and `devMode` is false → return `403 Forbidden`
+4. Extract `Authorization: Bearer <token>` from the request
+5. Hash with SHA-256 and compare (constant-time) to the stored admin key hash
+6. If valid → call `next`
+7. If invalid but `sessionCheck` returns true → call `next`
+8. Otherwise → return `403 Forbidden` with JSON body `{"error": "forbidden"}`
 
 ### Endpoints outside all auth
 

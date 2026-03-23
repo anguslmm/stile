@@ -10,7 +10,7 @@
 
 Add HTTP admin endpoints for managing callers and API keys, so operators can manage access without CLI access to the gateway host. All endpoints live under `/admin/` and are protected by the existing admin auth middleware (`ADMIN_API_KEY`).
 
-Under the role-based model, callers are named identities. Tool access and upstream credentials are determined by the role (role) assigned to each API key, which is defined in YAML config — not managed via the admin API.
+Under the role-based model (Task 6.2), callers are named identities. Roles are assigned to callers (not individual keys) via the `caller_roles` table. Tool access and upstream credentials are determined by the caller's assigned roles, which are defined in YAML config — not managed via the admin API.
 
 ---
 
@@ -57,7 +57,7 @@ List all callers.
 }
 ```
 
-`roles` lists the distinct roles across the caller's keys, so the operator can see which roles are assigned at a glance.
+`roles` lists the roles assigned to the caller (via the `caller_roles` table), so the operator can see which roles are assigned at a glance.
 
 ### `GET /admin/callers/{name}`
 
@@ -67,17 +67,16 @@ Get a single caller's details.
 ```json
 {
   "name": "angus",
+  "roles": ["dev", "prod"],
   "keys": [
     {
       "id": 1,
       "label": "laptop",
-      "role": "dev",
       "created_at": "2026-03-19T12:00:00Z"
     },
     {
       "id": 2,
       "label": "CI",
-      "role": "prod",
       "created_at": "2026-03-19T12:05:00Z"
     }
   ],
@@ -85,7 +84,7 @@ Get a single caller's details.
 }
 ```
 
-Keys are listed with metadata but never expose the key value or hash.
+Roles are listed at the caller level (not per-key), reflecting the Task 6.2 design where roles are assigned to callers. Keys are listed with metadata but never expose the key value or hash.
 
 **Errors:**
 - 404 if caller not found
@@ -101,12 +100,11 @@ Delete a caller and all their API keys.
 
 ### `POST /admin/callers/{name}/keys`
 
-Generate a new API key for a caller, assigning an role (role).
+Generate a new API key for a caller.
 
 **Request:**
 ```json
 {
-  "role": "prod",
   "label": "CI pipeline"
 }
 ```
@@ -115,7 +113,6 @@ Generate a new API key for a caller, assigning an role (role).
 ```json
 {
   "key": "sk-a1b2c3d4e5f6...",
-  "role": "prod",
   "label": "CI pipeline",
   "created_at": "2026-03-19T12:00:00Z"
 }
@@ -123,9 +120,10 @@ Generate a new API key for a caller, assigning an role (role).
 
 The `key` field is included **only** in the creation response. It is never returned by any other endpoint.
 
+**Note:** The original design accepted a `role` parameter here (per-key role assignment). Task 6.2 decoupled roles from keys — roles are now assigned to callers via `POST /admin/callers/{name}/roles` (Task 10.1).
+
 **Errors:**
 - 404 if caller not found
-- 400 if role is empty
 
 ### `GET /admin/callers/{name}/keys`
 
@@ -138,7 +136,6 @@ List keys for a caller (metadata only, no secrets).
     {
       "id": 1,
       "label": "laptop",
-      "role": "dev",
       "created_at": "2026-03-19T12:00:00Z"
     }
   ]
@@ -172,12 +169,13 @@ Types for API responses (no secrets):
 type CallerInfo struct {
     Name      string
     KeyCount  int
-    Roles  []string  // distinct roles across keys
+    Roles     []string  // roles assigned to caller (via caller_roles table)
     CreatedAt time.Time
 }
 
 type CallerDetail struct {
     Name      string
+    Roles     []string
     Keys      []KeyInfo
     CreatedAt time.Time
 }
@@ -185,7 +183,6 @@ type CallerDetail struct {
 type KeyInfo struct {
     ID        int64
     Label     string
-    Role   string
     CreatedAt time.Time
 }
 ```

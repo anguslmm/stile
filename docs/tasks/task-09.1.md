@@ -14,12 +14,9 @@ Task 9 introduced health checks, config hot-reload, graceful shutdown, and stdio
 
 ## 1. Clean up `reload` in main.go
 
-The `reload` function has 8 parameters, 3 of which are unused (`_ context.Context`, `_ *config.Config`, `_ *metrics.Metrics`). It's also called identically from two places (the `reloadFunc` closure and the SIGHUP handler).
+~~The `reload` function has 8 parameters, 3 of which are unused. Fix by converting to a closure.~~
 
-**Fix:**
-- Remove the free `reload` function entirely.
-- Make the reload logic a closure in `main()` that captures the variables it needs (`configPath`, `rt`, `handler`, `opts`, `hc`). This eliminates the parameter list problem.
-- Both the `reloadFunc` (for `/admin/reload`) and the SIGHUP handler should call this single closure.
+**Superseded:** The entire config hot-reload mechanism (reload function, SIGHUP handler, `/admin/reload` triggering a config re-parse) was removed in Task 18.1. This cleanup item was completed as part of that removal.
 
 ---
 
@@ -54,12 +51,9 @@ This allocates a new middleware handler chain on every request.
 
 ## 4. Use `atomic.Pointer` in proxy.go
 
-`proxy.Handler` uses a `sync.RWMutex` just to protect `SetRateLimiter`/reading the rate limiter pointer. This is a textbook case for `atomic.Pointer[policy.RateLimiter]`.
+~~Replace `sync.RWMutex` with `atomic.Pointer[policy.RateLimiter]` for the swappable rate limiter.~~
 
-**Fix:**
-- Replace `mu sync.RWMutex` + `rateLimiter *policy.RateLimiter` with `rateLimiter atomic.Pointer[policy.RateLimiter]`.
-- `SetRateLimiter` becomes `h.rateLimiter.Store(rl)`.
-- The read path becomes `rl := h.rateLimiter.Load()`.
+**Superseded:** `SetRateLimiter` and the associated mutex were removed entirely in Task 18.1 when config hot-reload was deleted. The rate limiter is now set once at construction and never swapped, so no synchronization is needed.
 
 ---
 

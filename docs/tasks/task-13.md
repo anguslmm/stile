@@ -12,20 +12,20 @@ Fix reliability and security issues in the HTTP and SSE transport layers that co
 
 ---
 
-## 1. Set HTTP client timeout
+## 1. Set HTTP response header timeout
 
-**File:** `internal/transport/http.go:36`
+**File:** `internal/transport/http.go`
 
 The default `http.Client{}` has no timeout. A hung upstream blocks the goroutine forever.
 
-**Fix:**
+**Fix:** Set `ResponseHeaderTimeout` on the underlying `http.Transport`, using the per-upstream timeout from config (default 60s):
 ```go
-client: &http.Client{
-    Timeout: 60 * time.Second,
-},
+httpTransport := &http.Transport{
+    ResponseHeaderTimeout: timeout,
+}
 ```
 
-Consider making this configurable per-upstream via config.
+**Note:** The original plan was to set `http.Client.Timeout`, but that applies to the entire request lifecycle including body reads. Since Stile proxies SSE streams (which are long-lived responses), a blanket client timeout would kill streaming connections. `ResponseHeaderTimeout` is the correct choice — it catches hung upstreams that never respond, while allowing SSE streams to run indefinitely once headers arrive. Per-upstream timeouts are configured via `timeout` in the upstream config block (Task 20).
 
 ---
 
