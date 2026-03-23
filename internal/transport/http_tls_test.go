@@ -14,10 +14,11 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"time"
 
 	"github.com/anguslmm/stile/internal/config"
@@ -190,7 +191,7 @@ func TestTransportConnectsWithCustomCA(t *testing.T) {
 	dir := t.TempDir()
 	pki := generatePKI(t, dir, false)
 
-	srv := httptest.NewUnstartedServer(jsonRPCHandler())
+	srv := testutil.NewUnstartedServer(jsonRPCHandler())
 	srv.TLS = pki.ServerTLS
 	srv.StartTLS()
 	defer srv.Close()
@@ -200,6 +201,7 @@ func TestTransportConnectsWithCustomCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPTransport: %v", err)
 	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -221,7 +223,7 @@ func TestTransportSendsClientCertForMTLS(t *testing.T) {
 	dir := t.TempDir()
 	pki := generatePKI(t, dir, true)
 
-	srv := httptest.NewUnstartedServer(jsonRPCHandler())
+	srv := testutil.NewUnstartedServer(jsonRPCHandler())
 	srv.TLS = pki.ServerTLS
 	srv.StartTLS()
 	defer srv.Close()
@@ -231,6 +233,7 @@ func TestTransportSendsClientCertForMTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPTransport: %v", err)
 	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -252,7 +255,7 @@ func TestTransportFailsWithoutClientCertWhenRequired(t *testing.T) {
 	dir := t.TempDir()
 	pki := generatePKI(t, dir, true)
 
-	srv := httptest.NewUnstartedServer(jsonRPCHandler())
+	srv := testutil.NewUnstartedServer(jsonRPCHandler())
 	srv.TLS = pki.ServerTLS
 	srv.StartTLS()
 	defer srv.Close()
@@ -263,6 +266,7 @@ func TestTransportFailsWithoutClientCertWhenRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPTransport: %v", err)
 	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -280,7 +284,7 @@ func TestTransportInsecureSkipVerify(t *testing.T) {
 	dir := t.TempDir()
 	pki := generatePKI(t, dir, false)
 
-	srv := httptest.NewUnstartedServer(jsonRPCHandler())
+	srv := testutil.NewUnstartedServer(jsonRPCHandler())
 	srv.TLS = pki.ServerTLS
 	srv.StartTLS()
 	defer srv.Close()
@@ -291,6 +295,7 @@ func TestTransportInsecureSkipVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPTransport: %v", err)
 	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,

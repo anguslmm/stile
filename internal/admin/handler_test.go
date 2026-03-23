@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"strconv"
 	"testing"
 
@@ -72,7 +74,7 @@ func newTestServer(t *testing.T, store *auth.SQLiteStore, rt *router.RouteTable)
 	h := NewHandler(store, rt)
 	mux := http.NewServeMux()
 	h.Register(mux)
-	return httptest.NewServer(mux)
+	return testutil.NewServer(mux)
 }
 
 func newTestServerWithAuth(t *testing.T, store *auth.SQLiteStore, rt *router.RouteTable, adminKey string) *httptest.Server {
@@ -82,7 +84,7 @@ func newTestServerWithAuth(t *testing.T, store *auth.SQLiteStore, rt *router.Rou
 	h.Register(mux)
 	adminHash := sha256.Sum256([]byte(adminKey))
 	adminAuth := auth.AdminAuthMiddleware(adminHash, false)
-	return httptest.NewServer(adminAuth(mux))
+	return testutil.NewServer(adminAuth(mux))
 }
 
 func doRequest(t *testing.T, method, url string, body any) *http.Response {

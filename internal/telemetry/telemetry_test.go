@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"testing"
 
 	"go.opentelemetry.io/otel/codes"
@@ -231,7 +233,7 @@ upstreams:
 
 func TestInitReturnsProviderWhenEnabled(t *testing.T) {
 	// Start a dummy HTTP server to act as OTLP receiver (just 200 everything).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	}))

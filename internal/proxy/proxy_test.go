@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"os/exec"
 	"strings"
 	"testing"
@@ -343,7 +345,7 @@ func TestMixedHTTPAndStdioUpstreams(t *testing.T) {
 		},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req jsonrpc.Request
 		json.Unmarshal(body, &req)

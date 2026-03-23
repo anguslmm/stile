@@ -25,9 +25,9 @@ func redisRateLimiterFromYAML(t *testing.T, mr *miniredis.Miniredis, yaml string
 }
 
 func TestRedisUnderLimitPasses(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -46,9 +46,9 @@ rate_limits:
 }
 
 func TestRedisOverLimitRejects(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -71,9 +71,9 @@ rate_limits:
 }
 
 func TestRedisPerCallerIsolation(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -96,9 +96,9 @@ rate_limits:
 }
 
 func TestRedisPerToolIsolation(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -121,9 +121,9 @@ rate_limits:
 }
 
 func TestRedisPerUpstreamLimit(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -149,9 +149,9 @@ rate_limits:
 }
 
 func TestRedisNoRateLimitsConfigured(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http
@@ -168,7 +168,11 @@ rate_limits:
 }
 
 func TestRedisFailClosedOnDisconnect(t *testing.T) {
-	mr := miniredis.RunT(t)
+	// This test stops miniredis mid-test, so it needs its own instance.
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
 
 	rl := redisRateLimiterFromYAML(t, mr, `
 upstreams:
@@ -219,7 +223,7 @@ rate_limits:
 }
 
 func TestRedisGlobalLimitSharedAcrossInstances(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
 	yaml := `
 upstreams:
@@ -231,7 +235,7 @@ rate_limits:
   default_tool: 10/sec
   backend: redis
   redis:
-    address: ` + mr.Addr() + `
+    address: ` + sharedMR.Addr() + `
 `
 	cfg, err := config.LoadBytes([]byte(yaml))
 	if err != nil {
@@ -272,9 +276,9 @@ rate_limits:
 }
 
 func TestRedisRoleBasedCallerRates(t *testing.T) {
-	mr := miniredis.RunT(t)
+	sharedMR.FlushAll()
 
-	rl := redisRateLimiterFromYAML(t, mr, `
+	rl := redisRateLimiterFromYAML(t, sharedMR, `
 upstreams:
   - name: svc
     transport: streamable-http

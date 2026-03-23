@@ -19,6 +19,7 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
+	"github.com/anguslmm/stile/internal/testutil"
 )
 
 // testCA generates a self-signed CA, server cert, and optionally a client cert,
@@ -186,13 +187,13 @@ upstreams:
 	defer srv.httpServer.Close()
 
 	// Connect with HTTPS client that trusts our CA.
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: pki.CACertPool,
-			},
+	clientTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs: pki.CACertPool,
 		},
 	}
+	testutil.PatchTransport(clientTransport)
+	client := &http.Client{Transport: clientTransport}
 
 	resp, err := client.Get("https://" + ln.Addr().String() + "/healthz")
 	if err != nil {
@@ -230,13 +231,13 @@ upstreams:
 	defer srv.httpServer.Close()
 
 	// Client WITHOUT a client cert should fail.
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: pki.CACertPool,
-			},
+	clientTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs: pki.CACertPool,
 		},
 	}
+	testutil.PatchTransport(clientTransport)
+	client := &http.Client{Transport: clientTransport}
 
 	_, err = client.Get("https://" + ln.Addr().String() + "/healthz")
 	if err == nil {
@@ -276,14 +277,14 @@ upstreams:
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:      pki.CACertPool,
-				Certificates: []tls.Certificate{clientCert},
-			},
+	clientTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs:      pki.CACertPool,
+			Certificates: []tls.Certificate{clientCert},
 		},
 	}
+	testutil.PatchTransport(clientTransport)
+	client := &http.Client{Transport: clientTransport}
 
 	resp, err := client.Get("https://" + ln.Addr().String() + "/healthz")
 	if err != nil {

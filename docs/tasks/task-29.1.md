@@ -1,6 +1,6 @@
 # Task 29.1 — Fix flaky test suite under parallel execution
 
-Status: **todo**
+Status: **done**
 
 ## Problem
 

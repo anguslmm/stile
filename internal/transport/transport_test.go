@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/testutil"
 )
 
 // newTestUpstream creates an HTTPUpstreamConfig via LoadBytes for testing.
@@ -41,21 +41,30 @@ upstreams:
 	return cfg.Upstreams()[0].(*config.HTTPUpstreamConfig)
 }
 
+// newTestHTTPTransport creates an HTTPTransport and patches its client
+// transport for test use (disables keep-alive, sets SO_LINGER=0).
+func newTestHTTPTransport(t *testing.T, url string, auth bool) *HTTPTransport {
+	t.Helper()
+	upstream := newTestUpstream(t, url, auth)
+	tr, err := NewHTTPTransport(upstream)
+	if err != nil {
+		t.Fatalf("NewHTTPTransport: %v", err)
+	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
+	return tr
+}
+
 func TestJSONResponseRoundTrip(t *testing.T) {
 	resp := jsonrpc.NewErrorResponse(jsonrpc.IntID(1), jsonrpc.CodeMethodNotFound, "not found")
 	respBytes, _ := json.Marshal(resp)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBytes)
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, err := NewHTTPTransport(upstream)
-	if err != nil {
-		t.Fatalf("NewHTTPTransport: %v", err)
-	}
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -83,14 +92,13 @@ func TestJSONResponseRoundTrip(t *testing.T) {
 func TestSSEResponseRoundTrip(t *testing.T) {
 	sseBody := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":\"hello\",\"id\":1}\n\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte(sseBody))
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -117,14 +125,13 @@ func TestSendHelperJSON(t *testing.T) {
 	resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), map[string]string{"key": "value"})
 	respBytes, _ := json.Marshal(resp)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBytes)
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -151,14 +158,13 @@ data: {"jsonrpc":"2.0","result":{"tools":[]},"id":1}
 
 `
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte(sseBody))
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -186,7 +192,7 @@ func TestAuthHeaderInjection(t *testing.T) {
 	t.Setenv("TEST_MCP_TOKEN", "secret-token-123")
 
 	var gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
 		data, _ := json.Marshal(resp)
@@ -195,8 +201,7 @@ func TestAuthHeaderInjection(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, true)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, true)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -215,13 +220,12 @@ func TestAuthHeaderInjection(t *testing.T) {
 }
 
 func TestUpstreamError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -291,14 +295,13 @@ func TestSSEReaderMultiLineData(t *testing.T) {
 }
 
 func TestHTTPClientTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Sleep longer than the header timeout but short enough for the test.
 		time.Sleep(2 * time.Second)
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 	// Override with a short timeout for the test.
 	tr.client.Transport.(*http.Transport).ResponseHeaderTimeout = 50 * time.Millisecond
 
@@ -318,7 +321,7 @@ func TestHTTPClientTimeout(t *testing.T) {
 }
 
 func TestPerUpstreamTimeoutOverride(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
 		data, _ := json.Marshal(resp)
@@ -344,6 +347,7 @@ upstreams:
 	if err != nil {
 		t.Fatalf("NewHTTPTransport: %v", err)
 	}
+	testutil.PatchTransport(tr.client.Transport.(*http.Transport))
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -369,13 +373,12 @@ func TestSSEReaderOversizedLine(t *testing.T) {
 }
 
 func Test400DoesNotMarkUnhealthy(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -400,7 +403,7 @@ func TestOutboundTraceparentInjection(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	var gotTraceparent string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTraceparent = r.Header.Get("traceparent")
 		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
 		data, _ := json.Marshal(resp)
@@ -409,11 +412,7 @@ func TestOutboundTraceparentInjection(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, err := NewHTTPTransport(upstream)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	// Create a span so there's trace context to inject.
 	tp := sdktrace.NewTracerProvider()
@@ -427,7 +426,7 @@ func TestOutboundTraceparentInjection(t *testing.T) {
 		ID:      jsonrpc.IntID(1),
 	}
 
-	_, err = tr.RoundTrip(ctx, req)
+	_, err := tr.RoundTrip(ctx, req)
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -447,7 +446,7 @@ func TestNoTraceparentWithoutSpan(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	var gotTraceparent string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTraceparent = r.Header.Get("traceparent")
 		resp, _ := jsonrpc.NewResponse(jsonrpc.IntID(1), "ok")
 		data, _ := json.Marshal(resp)
@@ -456,11 +455,7 @@ func TestNoTraceparentWithoutSpan(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, err := NewHTTPTransport(upstream)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
@@ -469,7 +464,7 @@ func TestNoTraceparentWithoutSpan(t *testing.T) {
 	}
 
 	// No span in context — should not inject traceparent.
-	_, err = tr.RoundTrip(context.Background(), req)
+	_, err := tr.RoundTrip(context.Background(), req)
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -481,7 +476,7 @@ func TestNoTraceparentWithoutSpan(t *testing.T) {
 
 func TestHTTPTransportHealthTracking(t *testing.T) {
 	requestCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		// Fail the first 3 requests, then succeed.
 		if requestCount <= 3 {
@@ -495,8 +490,7 @@ func TestHTTPTransportHealthTracking(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	upstream := newTestUpstream(t, srv.URL, false)
-	tr, _ := NewHTTPTransport(upstream)
+	tr := newTestHTTPTransport(t, srv.URL, false)
 
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,

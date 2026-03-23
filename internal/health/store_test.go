@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -42,8 +41,8 @@ func TestLocalStoreGetSet(t *testing.T) {
 }
 
 func TestRedisStoreGetSet(t *testing.T) {
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sharedMR.FlushAll()
+	client := redis.NewClient(&redis.Options{Addr: sharedMR.Addr()})
 	defer client.Close()
 
 	store := NewRedisStore(client, "stile:")
@@ -80,15 +79,15 @@ func TestRedisStoreGetSet(t *testing.T) {
 	}
 
 	// Verify TTL was set.
-	ttl := mr.TTL("stile:health:upstream-a")
+	ttl := sharedMR.TTL("stile:health:upstream-a")
 	if ttl <= 0 {
 		t.Error("expected positive TTL on key")
 	}
 }
 
 func TestRedisStoreExpiry(t *testing.T) {
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sharedMR.FlushAll()
+	client := redis.NewClient(&redis.Options{Addr: sharedMR.Addr()})
 	defer client.Close()
 
 	store := NewRedisStore(client, "stile:")
@@ -106,7 +105,7 @@ func TestRedisStoreExpiry(t *testing.T) {
 	}
 
 	// Fast-forward past TTL.
-	mr.FastForward(3 * time.Second)
+	sharedMR.FastForward(3 * time.Second)
 
 	// Key should be expired.
 	_, err = store.Get(ctx, "upstream-a")
@@ -116,8 +115,8 @@ func TestRedisStoreExpiry(t *testing.T) {
 }
 
 func TestRedisStoreOverwrite(t *testing.T) {
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sharedMR.FlushAll()
+	client := redis.NewClient(&redis.Options{Addr: sharedMR.Addr()})
 	defer client.Close()
 
 	store := NewRedisStore(client, "test:")

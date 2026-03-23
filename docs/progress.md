@@ -42,7 +42,7 @@ This document tracks the status of each implementation task. Agents should read 
 | 27.1 | Add OpenTelemetry tracing to `stile wrap` | [task-27.1.md](tasks/task-27.1.md) | done |
 | 28 | Admin CLI remote mode (`--remote`) | [task-28.md](tasks/task-28.md) | done |
 | 29 | In-memory cache for hot-path auth lookups | [task-29.md](tasks/task-29.md) | done |
-| 29.1 | Fix flaky test suite under parallel execution | [task-29.1.md](tasks/task-29.1.md) | todo |
+| 29.1 | Fix flaky test suite under parallel execution | [task-29.1.md](tasks/task-29.1.md) | done |
 | 30 | Audit: reconcile task docs with codebase | [task-30.md](tasks/task-30.md) | todo |
 | 31 | Admin dashboard (embedded web UI) | [task-31.md](tasks/task-31.md) | todo |
 

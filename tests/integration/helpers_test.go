@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,7 +46,7 @@ func newMockMCPServer(t *testing.T, tools []transport.ToolSchema) *mockMCPServer
 	t.Helper()
 	m := &mockMCPServer{tools: tools}
 	m.healthy.Store(true)
-	m.server = httptest.NewServer(http.HandlerFunc(m.handleRequest))
+	m.server = testutil.NewServer(http.HandlerFunc(m.handleRequest))
 	t.Cleanup(func() { m.server.Close() })
 	return m
 }

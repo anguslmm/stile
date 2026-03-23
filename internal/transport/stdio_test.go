@@ -15,6 +15,7 @@ import (
 
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
+	"github.com/anguslmm/stile/internal/testutil"
 )
 
 // mockServerBinary is set by TestMain so the go build happens before any
@@ -22,6 +23,8 @@ import (
 var mockServerBinary string
 
 func TestMain(m *testing.M) {
+	testutil.PatchDefaultTransport()
+
 	dir, err := os.MkdirTemp("", "stile-mock-server")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create temp dir: %v\n", err)

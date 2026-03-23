@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/anguslmm/stile/internal/auth"
+	"github.com/anguslmm/stile/internal/testutil"
 )
 
 // newClientTestServer sets up an admin API server backed by a real SQLite store
@@ -24,7 +24,7 @@ func newClientTestServer(t *testing.T) (*Client, *auth.SQLiteStore) {
 	adminKey := "test-admin-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
 	adminMW := auth.AdminAuthMiddleware(adminHash, false)
-	ts := httptest.NewServer(adminMW(mux))
+	ts := testutil.NewServer(adminMW(mux))
 	t.Cleanup(ts.Close)
 
 	client := NewClient(ts.URL, adminKey)
@@ -225,7 +225,7 @@ func TestClientAuthRequired(t *testing.T) {
 	adminKey := "real-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
 	adminMW := auth.AdminAuthMiddleware(adminHash, false)
-	ts := httptest.NewServer(adminMW(mux))
+	ts := testutil.NewServer(adminMW(mux))
 	defer ts.Close()
 
 	// Wrong key should fail.
@@ -258,7 +258,7 @@ func TestClientConnectionError(t *testing.T) {
 }
 
 func TestClientErrorParsing(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]string{"error": "caller already exists"})

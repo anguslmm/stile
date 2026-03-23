@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -54,7 +56,7 @@ func newTracedTestServer(t *testing.T, mock *mockTransport) (*httptest.Server, *
 
 	h := proxy.NewHandler(rt, nil, nil, nil, proxy.WithTracer(tracer))
 	srv := New(cfg, h, rt, nil, &Options{Tracer: tracer})
-	return httptest.NewServer(srv.Handler()), exporter
+	return testutil.NewServer(srv.Handler()), exporter
 }
 
 func TestInboundTraceparentCreatesChildSpan(t *testing.T) {
@@ -202,7 +204,7 @@ func TestTraceparentWithAuthMiddleware(t *testing.T) {
 		Tracer:        tracer,
 		Authenticator: authenticator,
 	})
-	ts := httptest.NewServer(srv.Handler())
+	ts := testutil.NewServer(srv.Handler())
 	defer ts.Close()
 
 	traceID := "4bf92f3577b34da6a3ce929d0e0e4736"

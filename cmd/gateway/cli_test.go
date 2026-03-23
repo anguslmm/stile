@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -289,7 +291,7 @@ func startTestAdminServer(t *testing.T) (*auth.SQLiteStore, *httptest.Server) {
 	adminKey := "test-admin-key"
 	adminHash := sha256.Sum256([]byte(adminKey))
 	adminMW := auth.AdminAuthMiddleware(adminHash, false)
-	ts := httptest.NewServer(adminMW(mux))
+	ts := testutil.NewServer(adminMW(mux))
 	t.Cleanup(ts.Close)
 
 	return store, ts

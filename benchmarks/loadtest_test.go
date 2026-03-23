@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+
+	"github.com/anguslmm/stile/internal/testutil"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +37,7 @@ func newMockUpstream(tools []string, latency time.Duration) *httptest.Server {
 	}
 	toolsResult, _ := json.Marshal(map[string]any{"tools": toolSchemas})
 
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req jsonrpc.Request
 		json.Unmarshal(body, &req)
@@ -80,7 +82,7 @@ func newMockSSEUpstream(tools []string, numEvents int) *httptest.Server {
 	}
 	toolsResult, _ := json.Marshal(map[string]any{"tools": toolSchemas})
 
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return testutil.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req jsonrpc.Request
 		json.Unmarshal(body, &req)

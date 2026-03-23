@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/anguslmm/stile/internal/config"
+	"github.com/anguslmm/stile/internal/testutil"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/proxy"
 	"github.com/anguslmm/stile/internal/router"
@@ -67,7 +68,7 @@ func newTestServer(t *testing.T, mock *mockTransport) *httptest.Server {
 
 	h := proxy.NewHandler(rt, nil, nil, nil)
 	srv := New(cfg, h, rt, nil, nil)
-	return httptest.NewServer(srv.Handler())
+	return testutil.NewServer(srv.Handler())
 }
 
 func postMCP(t *testing.T, url string, body any) *http.Response {
