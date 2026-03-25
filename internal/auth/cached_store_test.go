@@ -102,6 +102,22 @@ func (m *mockStore) UnassignRole(callerName string, role string) error {
 	return fmt.Errorf("auth: not found: %w", ErrNotFound)
 }
 
+func (m *mockStore) EnsureCaller(name string, defaultRoles []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.callers[name] {
+		m.callers[name] = true
+		m.roles[name] = append(m.roles[name], defaultRoles...)
+	}
+	return nil
+}
+
+func (m *mockStore) CallerExists(name string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callers[name], nil
+}
+
 var _ Store = (*mockStore)(nil)
 
 func TestCacheHitAvoidsSecondDBCall(t *testing.T) {

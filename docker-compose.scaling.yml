@@ -5,6 +5,7 @@
 #     ├── stile-1 (:8081) ──┐
 #     └── stile-2 (:8082) ──┤── github-wrapper (:9090) [stile wrap]
 #                            ├── fetch-wrapper  (:9091) [stile wrap]
+#                            ├── dex (:5556)    [OIDC provider]
 #                            ├── postgres (:5432)
 #                            └── redis (:6379)
 #
@@ -13,7 +14,22 @@
 #   export ADMIN_API_KEY="pick-a-secret"
 #   docker compose -f docker-compose.scaling.yml up --build
 #
-# Jaeger UI: http://localhost:16686
+# Jaeger UI:  http://localhost:16686
+# Dex:        http://localhost:5556/dex/.well-known/openid-configuration
+#
+# Get an OIDC token (password grant via Dex):
+#   scripts/get-oidc-token.sh
+#
+# Or manually:
+#   TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+#     -d grant_type=password \
+#     -d username=alice@example.com \
+#     -d password=password \
+#     -d client_id=stile \
+#     -d client_secret=stile-secret \
+#     -d "scope=openid email profile" | jq -r .id_token)
+#   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/mcp \
+#     -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 
 services:
   # --- Load balancer ---
@@ -42,6 +58,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      dex:
+        condition: service_started
       github-wrapper:
         condition: service_started
       fetch-wrapper:
@@ -61,6 +79,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      dex:
+        condition: service_started
       github-wrapper:
         condition: service_started
       fetch-wrapper:
@@ -104,6 +124,15 @@ services:
     depends_on:
       jaeger:
         condition: service_started
+
+  # --- OIDC provider (for testing) ---
+  dex:
+    image: dexidp/dex:latest
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./configs/dex.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "5556:5556"
 
   # --- Observability ---
   jaeger:

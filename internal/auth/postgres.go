@@ -299,6 +299,38 @@ func (s *PostgresStore) KeyCountForCaller(callerName string) (int, error) {
 	return count, nil
 }
 
+// EnsureCaller creates a caller if it doesn't exist, assigning default roles
+// only on creation. Uses INSERT ... ON CONFLICT DO NOTHING for safe concurrent access.
+func (s *PostgresStore) EnsureCaller(name string, defaultRoles []string) error {
+	result, err := s.db.Exec("INSERT INTO callers (name) VALUES ($1) ON CONFLICT DO NOTHING", name)
+	if err != nil {
+		return fmt.Errorf("auth: ensure caller: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return nil // already exists
+	}
+	for _, role := range defaultRoles {
+		if _, err := s.db.Exec(
+			"INSERT INTO caller_roles (caller_id, role) VALUES ((SELECT id FROM callers WHERE name = $1), $2) ON CONFLICT DO NOTHING",
+			name, role,
+		); err != nil {
+			return fmt.Errorf("auth: assign default role %q: %w", role, err)
+		}
+	}
+	return nil
+}
+
+// CallerExists reports whether a caller with the given name exists.
+func (s *PostgresStore) CallerExists(name string) (bool, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM callers WHERE name = $1", name).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("auth: check caller exists: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (s *PostgresStore) RevokeKey(callerName string, label string) error {
 	result, err := s.db.Exec(`
 		DELETE FROM api_keys

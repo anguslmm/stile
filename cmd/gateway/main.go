@@ -370,7 +370,21 @@ func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Stor
 		slog.Info("auth cache enabled", "ttl", ttl)
 	}
 
-	authenticator := auth.NewAuthenticator(store, cfg.Roles())
+	var authOpts []auth.AuthenticatorOption
+	if oidcCfg := cfg.OIDC(); oidcCfg != nil {
+		oidcValidator, err := auth.NewOIDCValidator(context.Background(), oidcCfg)
+		if err != nil {
+			slog.Error("OIDC setup failed", "error", err)
+			os.Exit(1)
+		}
+		authOpts = append(authOpts, auth.WithOIDCValidator(oidcValidator, oidcCfg))
+		slog.Info("OIDC authentication enabled",
+			"issuer", oidcCfg.Issuer(),
+			"validation", oidcCfg.Validation(),
+			"auto_provision", oidcCfg.AutoProvision(),
+		)
+	}
+	authenticator := auth.NewAuthenticator(store, cfg.Roles(), authOpts...)
 
 	opts := &server.Options{
 		Authenticator: authenticator,

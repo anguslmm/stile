@@ -283,6 +283,46 @@ var (
 	_ UpstreamConfig = (*StdioUpstreamConfig)(nil)
 )
 
+// OIDCConfig provides read-only access to OIDC authentication settings.
+type OIDCConfig struct {
+	issuer         string
+	audience       string
+	callerClaim    string
+	validation     string // "jwt" or "userinfo"
+	autoProvision  bool
+	defaultRoles   []string
+	allowedDomains []string
+}
+
+// Issuer returns the OIDC provider's issuer URL.
+func (o *OIDCConfig) Issuer() string { return o.issuer }
+
+// Audience returns the expected audience claim (OAuth client ID).
+func (o *OIDCConfig) Audience() string { return o.audience }
+
+// CallerClaim returns the JWT claim / userinfo field that maps to the caller name.
+func (o *OIDCConfig) CallerClaim() string { return o.callerClaim }
+
+// Validation returns the token validation mode ("jwt" or "userinfo").
+func (o *OIDCConfig) Validation() string { return o.validation }
+
+// AutoProvision returns whether to create callers on first OIDC login.
+func (o *OIDCConfig) AutoProvision() bool { return o.autoProvision }
+
+// DefaultRoles returns a copy of the roles assigned to auto-provisioned callers.
+func (o *OIDCConfig) DefaultRoles() []string {
+	out := make([]string, len(o.defaultRoles))
+	copy(out, o.defaultRoles)
+	return out
+}
+
+// AllowedDomains returns a copy of the allowed email domains.
+func (o *OIDCConfig) AllowedDomains() []string {
+	out := make([]string, len(o.allowedDomains))
+	copy(out, o.allowedDomains)
+	return out
+}
+
 // Config is immutable after construction via Load.
 type Config struct {
 	server            serverConfig
@@ -293,6 +333,7 @@ type Config struct {
 	audit             auditConfig
 	telemetry         telemetryConfig
 	health            healthConfig
+	oidc              *OIDCConfig
 }
 
 type healthConfig struct {
@@ -424,6 +465,9 @@ func (c *Config) Health() HealthConfig {
 		redis:         c.health.redis,
 	}
 }
+
+// OIDC returns the OIDC authentication config, or nil if not configured.
+func (c *Config) OIDC() *OIDCConfig { return c.oidc }
 
 // RateLimitDefaults returns the global rate limit defaults.
 func (c *Config) RateLimitDefaults() RateLimitDefaults {
@@ -684,6 +728,20 @@ type rawHealthConfig struct {
 	Redis         *rawRedisConfig `yaml:"redis"`
 }
 
+type rawInboundAuthConfig struct {
+	OIDC *rawOIDCConfig `yaml:"oidc"`
+}
+
+type rawOIDCConfig struct {
+	Issuer         string   `yaml:"issuer"`
+	Audience       string   `yaml:"audience"`
+	CallerClaim    string   `yaml:"caller_claim"`
+	Validation     string   `yaml:"validation"`
+	AutoProvision  bool     `yaml:"auto_provision"`
+	DefaultRoles   []string `yaml:"default_roles"`
+	AllowedDomains []string `yaml:"allowed_domains"`
+}
+
 type rawConfig struct {
 	Server     rawServerConfig          `yaml:"server"`
 	Upstreams  []rawUpstreamConfig      `yaml:"upstreams"`
@@ -693,6 +751,7 @@ type rawConfig struct {
 	Audit      *rawAuditConfig          `yaml:"audit"`
 	Telemetry  *rawTelemetryConfig      `yaml:"telemetry"`
 	Health     *rawHealthConfig         `yaml:"health"`
+	Auth       *rawInboundAuthConfig    `yaml:"auth"`
 
 	// rolesOrdered preserves YAML key order for roles.
 	// Populated by Load/LoadBytes before convert is called.
@@ -1165,6 +1224,32 @@ func convert(raw rawConfig) (*Config, error) {
 		return nil, fmt.Errorf("config: health.store is \"redis\" but no redis config found (set health.redis or rate_limits.redis)")
 	}
 
+	// Parse OIDC config.
+	if raw.Auth != nil && raw.Auth.OIDC != nil {
+		ro := raw.Auth.OIDC
+		validation := ro.Validation
+		if validation == "" {
+			validation = "jwt"
+		}
+		callerClaim := ro.CallerClaim
+		if callerClaim == "" {
+			callerClaim = "email"
+		}
+		defaultRoles := make([]string, len(ro.DefaultRoles))
+		copy(defaultRoles, ro.DefaultRoles)
+		allowedDomains := make([]string, len(ro.AllowedDomains))
+		copy(allowedDomains, ro.AllowedDomains)
+		cfg.oidc = &OIDCConfig{
+			issuer:         ro.Issuer,
+			audience:       ro.Audience,
+			callerClaim:    callerClaim,
+			validation:     validation,
+			autoProvision:  ro.AutoProvision,
+			defaultRoles:   defaultRoles,
+			allowedDomains: allowedDomains,
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -1293,6 +1378,21 @@ func validate(raw rawConfig) error {
 		case "", "healthy", "unhealthy":
 		default:
 			return fmt.Errorf("config: health.missing_status must be \"healthy\" or \"unhealthy\", got %q", raw.Health.MissingStatus)
+		}
+	}
+
+	if raw.Auth != nil && raw.Auth.OIDC != nil {
+		o := raw.Auth.OIDC
+		if o.Issuer == "" {
+			return fmt.Errorf("config: auth.oidc.issuer is required")
+		}
+		switch o.Validation {
+		case "", "jwt", "userinfo":
+		default:
+			return fmt.Errorf("config: auth.oidc.validation must be \"jwt\" or \"userinfo\", got %q", o.Validation)
+		}
+		if (o.Validation == "" || o.Validation == "jwt") && o.Audience == "" {
+			return fmt.Errorf("config: auth.oidc.audience is required for JWT validation")
 		}
 	}
 

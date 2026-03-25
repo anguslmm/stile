@@ -1,0 +1,33 @@
+# Dex OIDC provider for local testing.
+# Static users: alice@example.com / password, bob@example.com / password
+
+issuer: http://dex:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  # Enable password grant for CLI-based token requests.
+  passwordConnector: local
+
+staticClients:
+  - id: stile
+    secret: stile-secret
+    name: Stile Gateway
+    redirectURIs:
+      - http://localhost:8080/callback
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: alice@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: alice
+    userID: alice-001
+  - email: bob@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: bob
+    userID: bob-002

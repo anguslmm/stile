@@ -69,6 +69,8 @@ type Store interface {
 	KeyCountForCaller(callerName string) (int, error)
 	AssignRole(callerName string, role string) error
 	UnassignRole(callerName string, role string) error
+	EnsureCaller(name string, defaultRoles []string) error
+	CallerExists(name string) (bool, error)
 	Close() error
 }
 
@@ -392,6 +394,38 @@ func (s *SQLiteStore) KeyCountForCaller(callerName string) (int, error) {
 		return 0, fmt.Errorf("auth: count keys: %w", err)
 	}
 	return count, nil
+}
+
+// EnsureCaller creates a caller if it doesn't exist, assigning default roles
+// only on creation. Uses INSERT OR IGNORE for safe concurrent access.
+func (s *SQLiteStore) EnsureCaller(name string, defaultRoles []string) error {
+	result, err := s.db.Exec("INSERT OR IGNORE INTO callers (name) VALUES (?)", name)
+	if err != nil {
+		return fmt.Errorf("auth: ensure caller: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return nil // already exists
+	}
+	for _, role := range defaultRoles {
+		if _, err := s.db.Exec(
+			"INSERT OR IGNORE INTO caller_roles (caller_id, role) VALUES ((SELECT id FROM callers WHERE name = ?), ?)",
+			name, role,
+		); err != nil {
+			return fmt.Errorf("auth: assign default role %q: %w", role, err)
+		}
+	}
+	return nil
+}
+
+// CallerExists reports whether a caller with the given name exists.
+func (s *SQLiteStore) CallerExists(name string) (bool, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM callers WHERE name = ?", name).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("auth: check caller exists: %w", err)
+	}
+	return count > 0, nil
 }
 
 // RevokeKey deletes an API key by caller name and label.

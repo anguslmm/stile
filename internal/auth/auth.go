@@ -17,6 +17,20 @@ import (
 	"github.com/anguslmm/stile/internal/config"
 )
 
+// AuthMethodKey is a context key for the authentication method used.
+type authMethodKey struct{}
+
+// AuthMethodFromContext returns the authentication method ("apikey" or "oidc") from the context.
+func AuthMethodFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(authMethodKey{}).(string)
+	return s
+}
+
+// ContextWithAuthMethod attaches the auth method to the context.
+func ContextWithAuthMethod(ctx context.Context, method string) context.Context {
+	return context.WithValue(ctx, authMethodKey{}, method)
+}
+
 // Caller represents an authenticated caller with their access permissions.
 type Caller struct {
 	Name         string
@@ -79,12 +93,25 @@ type Authenticator struct {
 	credentials  map[string]map[string]string // role name → upstream name → token value
 	allowedTools map[string][]glob.Glob       // role name → compiled patterns
 	roleOrder    []string                     // role names in config order
+	oidc         *OIDCValidator
+	oidcCfg      *config.OIDCConfig
+}
+
+// AuthenticatorOption configures the Authenticator.
+type AuthenticatorOption func(*Authenticator)
+
+// WithOIDCValidator attaches an OIDC validator to the authenticator.
+func WithOIDCValidator(v *OIDCValidator, cfg *config.OIDCConfig) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.oidc = v
+		a.oidcCfg = cfg
+	}
 }
 
 // NewAuthenticator creates an Authenticator, resolving role config into
 // actual token values by reading environment variables and compiling glob
 // patterns for tool access.
-func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticator {
+func NewAuthenticator(store CallerStore, roles []config.RoleConfig, opts ...AuthenticatorOption) *Authenticator {
 	creds := make(map[string]map[string]string, len(roles))
 	globs := make(map[string][]glob.Glob, len(roles))
 	order := make([]string, 0, len(roles))
@@ -115,16 +142,20 @@ func NewAuthenticator(store CallerStore, roles []config.RoleConfig) *Authenticat
 		globs[role.Name()] = compiled
 	}
 
-	return &Authenticator{
+	a := &Authenticator{
 		store:        store,
 		credentials:  creds,
 		allowedTools: globs,
 		roleOrder:    order,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // Authenticate extracts and validates bearer token from the request.
-// Returns the caller, the label of the key used, and any error.
+// Returns the caller, the label of the key used ("oidc" for OIDC auth), and any error.
 func (a *Authenticator) Authenticate(r *http.Request) (*Caller, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -135,8 +166,28 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Caller, string, error) {
 	}
 
 	token := strings.TrimPrefix(header, "Bearer ")
-	hash := sha256.Sum256([]byte(token))
 
+	// Try OIDC if configured.
+	if a.oidc != nil {
+		shouldTry := false
+		switch a.oidcCfg.Validation() {
+		case "jwt":
+			shouldTry = isJWT(token)
+		case "userinfo":
+			// Skip OIDC for tokens that look like Stile API keys.
+			shouldTry = !strings.HasPrefix(token, "sk-")
+		}
+		if shouldTry {
+			caller, err := a.authenticateOIDC(r.Context(), token)
+			if err == nil {
+				return caller, "oidc", nil
+			}
+			slog.Debug("OIDC validation failed, trying API key", "error", err)
+		}
+	}
+
+	// API key authentication.
+	hash := sha256.Sum256([]byte(token))
 	result, err := a.store.LookupByKey(hash)
 	if err != nil {
 		return nil, "", fmt.Errorf("unauthorized")
@@ -153,6 +204,42 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Caller, string, error) {
 	caller.AllowedTools = a.unionAllowedTools(caller.Roles)
 
 	return caller, result.KeyLabel, nil
+}
+
+// authenticateOIDC validates an OIDC token and returns a Caller.
+func (a *Authenticator) authenticateOIDC(ctx context.Context, token string) (*Caller, error) {
+	identity, err := a.oidc.Validate(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-provision or verify caller exists.
+	// The store may implement Store (which includes EnsureCaller/CallerExists).
+	if store, ok := a.store.(Store); ok {
+		if a.oidcCfg.AutoProvision() {
+			if err := store.EnsureCaller(identity, a.oidcCfg.DefaultRoles()); err != nil {
+				slog.Warn("OIDC auto-provision failed", "identity", identity, "error", err)
+			}
+		} else {
+			exists, err := store.CallerExists(identity)
+			if err != nil {
+				return nil, fmt.Errorf("auth: check caller exists: %w", err)
+			}
+			if !exists {
+				return nil, fmt.Errorf("auth: OIDC caller %q not registered", identity)
+			}
+		}
+	}
+
+	roles, err := a.store.RolesForCaller(identity)
+	if err != nil {
+		return nil, fmt.Errorf("auth: lookup roles for %q: %w", identity, err)
+	}
+
+	caller := &Caller{Name: identity}
+	caller.Roles = a.orderByConfig(roles)
+	caller.AllowedTools = a.unionAllowedTools(caller.Roles)
+	return caller, nil
 }
 
 // unionAllowedTools computes the union of glob patterns across the given roles.
@@ -199,13 +286,20 @@ func (a *Authenticator) orderByConfig(roles []string) []string {
 // Middleware returns HTTP middleware that authenticates requests.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		caller, _, err := a.Authenticate(r)
+		caller, keyLabel, err := a.Authenticate(r)
 		if err != nil {
 			writeJSONRPCError(w, -32000, "unauthorized")
 			return
 		}
 		if caller != nil {
-			r = r.WithContext(ContextWithCaller(r.Context(), caller))
+			ctx := ContextWithCaller(r.Context(), caller)
+			if keyLabel == "oidc" {
+				ctx = ContextWithAuthMethod(ctx, "oidc")
+			} else {
+				ctx = ContextWithAuthMethod(ctx, "apikey")
+				ctx = ContextWithKeyLabel(ctx, keyLabel)
+			}
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})

@@ -222,6 +222,22 @@ func (c *CachedStore) UnassignRole(callerName string, role string) error {
 	return nil
 }
 
+// --- OIDC provisioning ---
+
+func (c *CachedStore) EnsureCaller(name string, defaultRoles []string) error {
+	err := c.inner.EnsureCaller(name, defaultRoles)
+	if err != nil {
+		return err
+	}
+	c.evictRoles(name)
+	c.sendNotify("roles", name)
+	return nil
+}
+
+func (c *CachedStore) CallerExists(name string) (bool, error) {
+	return c.inner.CallerExists(name)
+}
+
 // --- Passthrough (cold path, never cached) ---
 
 func (c *CachedStore) ListCallers() ([]CallerInfo, error)           { return c.inner.ListCallers() }

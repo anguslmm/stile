@@ -45,6 +45,16 @@ This document tracks the status of each implementation task. Agents should read 
 | 29.1 | Fix flaky test suite under parallel execution | [task-29.1.md](tasks/task-29.1.md) | done |
 | 30 | Admin dashboard (embedded web UI) | [task-30.md](tasks/task-30.md) | done |
 | 31 | Audit: reconcile task docs with codebase | [task-31.md](tasks/task-31.md) | done |
+| 32 | Inbound OIDC authentication | [task-32.md](tasks/task-32.md) | done |
+| 32.1 | Config and OIDC discovery | [task-32.md](tasks/task-32.md) | done |
+| 32.2 | JWT validation and auth strategy | [task-32.md](tasks/task-32.md) | done |
+| 32.3 | Auto-provisioning and wiring | [task-32.md](tasks/task-32.md) | done |
+| 33 | Outbound OAuth for upstream HTTP MCP servers | [task-33.md](tasks/task-33.md) | todo |
+| 33.1 | OAuth provider config and token store | [task-33.md](tasks/task-33.md) | todo |
+| 33.2 | Per-request token injection | [task-33.md](tasks/task-33.md) | todo |
+| 33.3 | OAuth authorization code flow endpoints | [task-33.md](tasks/task-33.md) | todo |
+| 33.4 | Connections UI | [task-33.md](tasks/task-33.md) | todo |
+| 34 | Tool naming and upstream attribution | [task-34.md](tasks/task-34.md) | todo |
 
 ## Notes
 

@@ -57,3 +57,16 @@ audit:
   enabled: true
   driver: postgres
   database: "postgres://stile:stile@postgres:5432/stile?sslmode=disable"
+
+# OIDC authentication via Dex (local testing).
+# Users: alice@example.com / password, bob@example.com / password
+# Get a token: scripts/get-oidc-token.sh
+auth:
+  oidc:
+    issuer: http://dex:5556/dex
+    audience: stile
+    validation: jwt
+    caller_claim: email
+    auto_provision: true
+    default_roles: ["agent"]
+    allowed_domains: ["example.com"]

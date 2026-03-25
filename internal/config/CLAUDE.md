@@ -15,6 +15,7 @@ Loads and validates Stile gateway configuration from YAML. Returns valid objects
 - **`CircuitBreakerConfig`**, **`RetryConfig`** — Per-upstream resilience settings; nil if not configured.
 - **`ServerTLSConfig`**, **`UpstreamTLSConfig`** — Inbound and outbound TLS settings respectively.
 - **`RedisConfig`** — Shared Redis settings used by both rate limiting and health backends.
+- **`OIDCConfig`** — OIDC authentication settings: issuer, audience, caller_claim, validation mode (jwt/userinfo), auto_provision, default_roles, allowed_domains. Returned by `Config.OIDC()` (nil when not configured). Slice getters return copies.
 - **`RateLimitDefaults`**, **`LoggingConfig`**, **`AuditConfig`**, **`TelemetryConfig`**, **`TracesConfig`**, **`HealthConfig`** — Subsystem config value types returned by `Config` getters.
 
 ## Key Exported Functions
