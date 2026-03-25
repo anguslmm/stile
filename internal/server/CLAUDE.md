@@ -5,8 +5,9 @@ Inbound MCP HTTP server: routes requests from agents to the proxy pipeline.
 ## Key Types
 
 - **`Server`** — wraps `net/http.Server` with a fixed route table; holds references to `proxy.Handler`, `router.RouteTable`, `auth.Authenticator`, and an OTel tracer.
-- **`Options`** — optional wiring passed to `New`: authenticator, admin auth middleware, admin handler, health checker, tracer. All fields are nil-safe.
+- **`Options`** — optional wiring passed to `New`: authenticator, admin auth middleware, admin handler, health checker, tracer, OAuth handler. All fields are nil-safe.
 - **`AdminRegistrar`** — interface for registering `/admin/` routes onto a `*http.ServeMux`.
+- **`OAuthRegistrar`** — interface for registering OAuth flow routes onto a `*http.ServeMux`.
 
 ## Key Functions
 
@@ -22,6 +23,8 @@ Inbound MCP HTTP server: routes requests from agents to the proxy pipeline.
 |---|---|---|
 | `POST /mcp` | POST | MCP JSON-RPC endpoint (auth-wrapped if `Authenticator` set) |
 | `/admin/` | any | `AdminRegistrar` routes (or fallback `POST /admin/refresh`) |
+| `/oauth/connect/{provider}` | GET | Starts OAuth authorization code flow (auth-wrapped) |
+| `/oauth/callback` | GET | Handles OAuth provider redirect (auth-wrapped) |
 | `GET /healthz` | GET | liveness (optional) |
 | `GET /readyz` | GET | readiness (optional) |
 | `GET /metrics` | GET | Prometheus metrics (optional) |

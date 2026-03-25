@@ -1,6 +1,6 @@
 # auth
 
-Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credential injection, and caller/key/role management backed by SQLite or Postgres.
+Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credential injection, per-user OAuth token management, and caller/key/role management backed by SQLite or Postgres.
 
 ## Key Types
 
@@ -14,6 +14,11 @@ Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credenti
 - **`CachedStore`** — Write-through cache wrapping any `Store`. Caches `LookupByKey` and `RolesForCaller` with TTL. Evicts on writes via reverse index (callerName → key hashes).
 - **`PGNotifyListener`** — Listens on Postgres channel `stile_auth_invalidate` and evicts `CachedStore` entries. Enables cache coherence across multiple Stile instances.
 - **`CacheStats`** / **`Cacheable`** — Observability interface and stats struct for cache hit/miss/eviction counters.
+- **`TokenStore`** (interface) — Per-user OAuth token CRUD: `StoreToken`, `GetToken`, `DeleteToken`, `ListProviders`. Backed by `SQLiteTokenStore` or `PostgresTokenStore`.
+- **`OAuthToken`** — Holds access_token, refresh_token, token_type, expiry, scopes. `Expired()` checks with a 30-second buffer.
+- **`TokenRefresher`** — Exchanges refresh tokens for new access tokens via the provider's token endpoint. Preserves old refresh token if provider doesn't issue a new one.
+- **`OAuthResolver`** — Implements `proxy.UpstreamAuthResolver`. Maps upstream names to OAuth providers, looks up per-user tokens, and auto-refreshes expired tokens.
+- **`OAuthHandler`** — HTTP handler for the OAuth authorization code flow: `GET /oauth/connect/{provider}` (starts flow with PKCE) and `GET /oauth/callback` (exchanges code for tokens). Uses in-memory state map for CSRF protection.
 
 ## Key Functions
 
@@ -25,6 +30,11 @@ Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credenti
 - `CallerFromContext(ctx)` / `ContextWithCaller(ctx, c)` — Context helpers for propagating `Caller` through the request pipeline.
 - `AuthMethodFromContext(ctx)` / `ContextWithAuthMethod(ctx, m)` — Context helpers for the auth method used ("apikey" or "oidc").
 - `AdminAuthMiddleware(keyHash, devMode)` — Separate middleware for admin endpoints; uses `crypto/subtle` constant-time compare.
+- `OpenTokenStore(cfg)` — Factory for token stores: returns `SQLiteTokenStore` or `PostgresTokenStore`.
+- `NewTokenRefresher(providers, client)` — Creates a refresher from config; resolves client_id/secret from env vars at construction.
+- `NewOAuthResolver(upstreams, store, refresher)` — Creates a resolver that maps OAuth-authed upstreams to providers and performs per-user token lookup + refresh.
+- `NewOAuthHandler(providers, store, baseURL)` — Creates OAuth flow endpoints. `Register(mux)` adds routes.
+- `UpstreamTokenFromContext(ctx)` / `ContextWithUpstreamToken(ctx, token)` — Context helpers for passing per-request OAuth tokens to the transport layer.
 
 ## OIDC Authentication
 
@@ -49,3 +59,6 @@ Both modes produce the same `Caller` struct. The authenticator tries OIDC first,
 - Postgres migrations use `pg_advisory_lock(42)` to prevent concurrent `CREATE TABLE` races on multi-instance startup.
 - `PGNotifyListener` uses a dedicated `pgx` connection for `LISTEN` (separate from the `sql.DB` pool) and reconnects with 1s backoff.
 - `EnsureCaller` checks `RowsAffected` to only assign default roles on creation (not on subsequent no-op inserts).
+- Token store uses `pg_advisory_lock(43)` (separate from auth store's 42) for Postgres migrations.
+- OAuth state parameters are stored in-memory with a 10-minute expiry and 15-minute cleanup cycle. State is single-use (deleted after consumption).
+- PKCE (S256) is always used for the authorization code flow per OAuth 2.1 best practices.

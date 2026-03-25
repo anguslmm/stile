@@ -128,7 +128,32 @@ func main() {
 		slog.Error("create rate limiter failed", "error", err)
 		os.Exit(1)
 	}
-	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore, proxy.WithTracer(tp.Tracer()))
+	// Build proxy handler options.
+	proxyOpts := []proxy.HandlerOption{proxy.WithTracer(tp.Tracer())}
+
+	// Set up outbound OAuth if any upstreams use oauth auth.
+	var tokenStore auth.TokenStore
+	var oauthHandler *auth.OAuthHandler
+	if hasOAuthUpstreams(cfg) {
+		dbCfg := cfg.Server().Database()
+		if dbCfg.Driver() == "" && dbCfg.DSN() == "" {
+			slog.Error("oauth upstreams require server.database to be configured")
+			os.Exit(1)
+		}
+		var err error
+		tokenStore, err = auth.OpenTokenStore(dbCfg)
+		if err != nil {
+			slog.Error("open token store failed", "error", err)
+			os.Exit(1)
+		}
+		refresher := auth.NewTokenRefresher(cfg.OAuthProviders(), nil)
+		resolver := auth.NewOAuthResolver(cfg.Upstreams(), tokenStore, refresher)
+		proxyOpts = append(proxyOpts, proxy.WithAuthResolver(resolver))
+		oauthHandler = auth.NewOAuthHandler(cfg.OAuthProviders(), tokenStore, "")
+		slog.Info("outbound OAuth enabled", "providers", len(cfg.OAuthProviders()))
+	}
+
+	handler := proxy.NewHandler(rt, rateLimiter, m, auditStore, proxyOpts...)
 
 	// Build health checker from router upstreams.
 	healthChecker, healthRedisClient := buildHealthChecker(cfg, rt, m)
@@ -139,6 +164,9 @@ func main() {
 	}
 	opts.HealthChecker = healthChecker
 	opts.Tracer = tp.Tracer()
+	if oauthHandler != nil {
+		opts.OAuthHandler = oauthHandler
+	}
 
 	// Create admin handler if auth is configured (store is available).
 	if callerStore != nil {
@@ -209,6 +237,11 @@ func main() {
 			// 7. Close audit log.
 			if auditStore != nil {
 				auditStore.Close()
+			}
+
+			// 8. Close token store.
+			if tokenStore != nil {
+				tokenStore.Close()
 			}
 
 			slog.Info("shutdown complete")
@@ -406,4 +439,15 @@ func buildAuthOpts(cfg *config.Config, devMode bool) (*server.Options, auth.Stor
 	}
 
 	return opts, store
+}
+
+func hasOAuthUpstreams(cfg *config.Config) bool {
+	for _, u := range cfg.Upstreams() {
+		if h, ok := u.(*config.HTTPUpstreamConfig); ok {
+			if a := h.Auth(); a != nil && a.Type() == "oauth" {
+				return true
+			}
+		}
+	}
+	return false
 }

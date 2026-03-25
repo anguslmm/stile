@@ -43,6 +43,11 @@ type AdminRegistrar interface {
 	Register(mux *http.ServeMux)
 }
 
+// OAuthRegistrar registers OAuth flow endpoints on a mux.
+type OAuthRegistrar interface {
+	Register(mux *http.ServeMux)
+}
+
 // Options configures optional Server behavior.
 type Options struct {
 	// Authenticator, if non-nil, wraps the MCP endpoint with auth middleware.
@@ -55,6 +60,8 @@ type Options struct {
 	HealthChecker *health.Checker
 	// Tracer, if non-nil, enables distributed tracing on the request path.
 	Tracer trace.Tracer
+	// OAuthHandler, if non-nil, registers OAuth flow endpoints.
+	OAuthHandler OAuthRegistrar
 }
 
 // New creates a Server from config, proxy handler, router, metrics, and options.
@@ -128,6 +135,17 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 			refreshHandler = opts.AdminAuth(refreshHandler)
 		}
 		mux.Handle("POST /admin/refresh", refreshHandler)
+	}
+
+	// Register OAuth flow endpoints (auth-protected).
+	if opts != nil && opts.OAuthHandler != nil {
+		oauthMux := http.NewServeMux()
+		opts.OAuthHandler.Register(oauthMux)
+		var oauthRoot http.Handler = oauthMux
+		if opts.Authenticator != nil {
+			oauthRoot = opts.Authenticator.Middleware(oauthMux)
+		}
+		mux.Handle("/oauth/", oauthRoot)
 	}
 
 	if opts != nil && opts.HealthChecker != nil {

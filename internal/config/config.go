@@ -323,6 +323,38 @@ func (o *OIDCConfig) AllowedDomains() []string {
 	return out
 }
 
+// OAuthProviderConfig provides read-only access to an OAuth provider's settings.
+type OAuthProviderConfig struct {
+	name            string
+	authURL         string
+	tokenURL        string
+	clientIDEnv     string
+	clientSecretEnv string
+	scopes          []string
+}
+
+// Name returns the provider name (the YAML map key).
+func (o *OAuthProviderConfig) Name() string { return o.name }
+
+// AuthURL returns the OAuth authorization endpoint.
+func (o *OAuthProviderConfig) AuthURL() string { return o.authURL }
+
+// TokenURL returns the OAuth token endpoint.
+func (o *OAuthProviderConfig) TokenURL() string { return o.tokenURL }
+
+// ClientIDEnv returns the env var name for the OAuth client ID.
+func (o *OAuthProviderConfig) ClientIDEnv() string { return o.clientIDEnv }
+
+// ClientSecretEnv returns the env var name for the OAuth client secret.
+func (o *OAuthProviderConfig) ClientSecretEnv() string { return o.clientSecretEnv }
+
+// Scopes returns a copy of the OAuth scopes.
+func (o *OAuthProviderConfig) Scopes() []string {
+	out := make([]string, len(o.scopes))
+	copy(out, o.scopes)
+	return out
+}
+
 // Config is immutable after construction via Load.
 type Config struct {
 	server            serverConfig
@@ -334,6 +366,7 @@ type Config struct {
 	telemetry         telemetryConfig
 	health            healthConfig
 	oidc              *OIDCConfig
+	oauthProviders    []OAuthProviderConfig
 }
 
 type healthConfig struct {
@@ -468,6 +501,24 @@ func (c *Config) Health() HealthConfig {
 
 // OIDC returns the OIDC authentication config, or nil if not configured.
 func (c *Config) OIDC() *OIDCConfig { return c.oidc }
+
+// OAuthProviders returns a copy of the OAuth provider configurations.
+func (c *Config) OAuthProviders() []OAuthProviderConfig {
+	out := make([]OAuthProviderConfig, len(c.oauthProviders))
+	copy(out, c.oauthProviders)
+	return out
+}
+
+// OAuthProvider returns the named OAuth provider config, or nil if not found.
+func (c *Config) OAuthProvider(name string) *OAuthProviderConfig {
+	for i := range c.oauthProviders {
+		if c.oauthProviders[i].name == name {
+			p := c.oauthProviders[i]
+			return &p
+		}
+	}
+	return nil
+}
 
 // RateLimitDefaults returns the global rate limit defaults.
 func (c *Config) RateLimitDefaults() RateLimitDefaults {
@@ -671,10 +722,17 @@ func (r *RoleConfig) ToolRateLimit() *RateLimit { return r.toolRateLimit }
 type AuthConfig struct {
 	authType string
 	tokenEnv string
+	provider string
 }
 
-func (a *AuthConfig) Type() string     { return a.authType }
+// Type returns the auth type ("bearer" or "oauth").
+func (a *AuthConfig) Type() string { return a.authType }
+
+// TokenEnv returns the env var name for static bearer tokens.
 func (a *AuthConfig) TokenEnv() string { return a.tokenEnv }
+
+// Provider returns the OAuth provider name (references oauth_providers key).
+func (a *AuthConfig) Provider() string { return a.provider }
 
 // --- raw types for YAML unmarshaling ---
 
@@ -742,16 +800,25 @@ type rawOIDCConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
 }
 
+type rawOAuthProviderConfig struct {
+	AuthURL         string   `yaml:"auth_url"`
+	TokenURL        string   `yaml:"token_url"`
+	ClientIDEnv     string   `yaml:"client_id_env"`
+	ClientSecretEnv string   `yaml:"client_secret_env"`
+	Scopes          []string `yaml:"scopes"`
+}
+
 type rawConfig struct {
-	Server     rawServerConfig          `yaml:"server"`
-	Upstreams  []rawUpstreamConfig      `yaml:"upstreams"`
-	Roles      map[string]rawRoleConfig `yaml:"roles"`
-	RateLimits *rawRateLimitDefaults    `yaml:"rate_limits"`
-	Logging    *rawLoggingConfig        `yaml:"logging"`
-	Audit      *rawAuditConfig          `yaml:"audit"`
-	Telemetry  *rawTelemetryConfig      `yaml:"telemetry"`
-	Health     *rawHealthConfig         `yaml:"health"`
-	Auth       *rawInboundAuthConfig    `yaml:"auth"`
+	Server         rawServerConfig                    `yaml:"server"`
+	Upstreams      []rawUpstreamConfig                `yaml:"upstreams"`
+	Roles          map[string]rawRoleConfig           `yaml:"roles"`
+	RateLimits     *rawRateLimitDefaults              `yaml:"rate_limits"`
+	Logging        *rawLoggingConfig                  `yaml:"logging"`
+	Audit          *rawAuditConfig                    `yaml:"audit"`
+	Telemetry      *rawTelemetryConfig                `yaml:"telemetry"`
+	Health         *rawHealthConfig                   `yaml:"health"`
+	Auth           *rawInboundAuthConfig              `yaml:"auth"`
+	OAuthProviders map[string]rawOAuthProviderConfig  `yaml:"oauth_providers"`
 
 	// rolesOrdered preserves YAML key order for roles.
 	// Populated by Load/LoadBytes before convert is called.
@@ -803,6 +870,7 @@ type rawRetryConfig struct {
 type rawAuthConfig struct {
 	Type     string `yaml:"type"`
 	TokenEnv string `yaml:"token_env"`
+	Provider string `yaml:"provider"`
 }
 
 type rawServerTLSConfig struct {
@@ -1042,6 +1110,7 @@ func convert(raw rawConfig) (*Config, error) {
 				h.auth = &AuthConfig{
 					authType: ru.Auth.Type,
 					tokenEnv: ru.Auth.TokenEnv,
+					provider: ru.Auth.Provider,
 				}
 			}
 			if ru.TLS != nil {
@@ -1224,6 +1293,20 @@ func convert(raw rawConfig) (*Config, error) {
 		return nil, fmt.Errorf("config: health.store is \"redis\" but no redis config found (set health.redis or rate_limits.redis)")
 	}
 
+	// Parse OAuth providers.
+	for name, rp := range raw.OAuthProviders {
+		scopes := make([]string, len(rp.Scopes))
+		copy(scopes, rp.Scopes)
+		cfg.oauthProviders = append(cfg.oauthProviders, OAuthProviderConfig{
+			name:            name,
+			authURL:         rp.AuthURL,
+			tokenURL:        rp.TokenURL,
+			clientIDEnv:     rp.ClientIDEnv,
+			clientSecretEnv: rp.ClientSecretEnv,
+			scopes:          scopes,
+		})
+	}
+
 	// Parse OIDC config.
 	if raw.Auth != nil && raw.Auth.OIDC != nil {
 		ro := raw.Auth.OIDC
@@ -1396,6 +1479,44 @@ func validate(raw rawConfig) error {
 		}
 	}
 
+	// Validate OAuth providers.
+	for name, p := range raw.OAuthProviders {
+		if p.AuthURL == "" {
+			return fmt.Errorf("config: oauth_providers[%q]: auth_url is required", name)
+		}
+		if p.TokenURL == "" {
+			return fmt.Errorf("config: oauth_providers[%q]: token_url is required", name)
+		}
+		if p.ClientIDEnv == "" {
+			return fmt.Errorf("config: oauth_providers[%q]: client_id_env is required", name)
+		}
+		if p.ClientSecretEnv == "" {
+			return fmt.Errorf("config: oauth_providers[%q]: client_secret_env is required", name)
+		}
+	}
+
+	// Build a map of upstream auth types for cross-reference validation.
+	oauthUpstreams := make(map[string]bool)
+	for _, u := range raw.Upstreams {
+		if u.Auth == nil {
+			continue
+		}
+		switch u.Auth.Type {
+		case "bearer", "":
+			// OK — static token auth.
+		case "oauth":
+			if u.Auth.Provider == "" {
+				return fmt.Errorf("config: upstream %q: auth.provider is required when auth.type is \"oauth\"", u.Name)
+			}
+			if _, ok := raw.OAuthProviders[u.Auth.Provider]; !ok {
+				return fmt.Errorf("config: upstream %q: auth.provider %q not found in oauth_providers", u.Name, u.Auth.Provider)
+			}
+			oauthUpstreams[u.Name] = true
+		default:
+			return fmt.Errorf("config: upstream %q: auth.type must be \"bearer\" or \"oauth\", got %q", u.Name, u.Auth.Type)
+		}
+	}
+
 	for roleName, role := range raw.Roles {
 		if roleName == "" {
 			return fmt.Errorf("config: roles: empty role name")
@@ -1414,6 +1535,9 @@ func validate(raw rawConfig) error {
 			}
 			if envVar == "" {
 				return fmt.Errorf("config: roles[%q]: empty env var for upstream %q", roleName, upstreamName)
+			}
+			if oauthUpstreams[upstreamName] {
+				return fmt.Errorf("config: roles[%q]: has credentials for upstream %q, but %q uses oauth auth (credentials are per-user, not per-role)", roleName, upstreamName, upstreamName)
 			}
 		}
 	}

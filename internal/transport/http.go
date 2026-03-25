@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 )
@@ -133,7 +134,10 @@ func (t *HTTPTransport) RoundTrip(ctx context.Context, req *jsonrpc.Request) (Tr
 	// Inject W3C Trace Context (traceparent/tracestate) into outbound headers.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
-	if t.token != "" {
+	// Per-request token (from OAuth flow) takes priority over static token.
+	if perReqToken := auth.UpstreamTokenFromContext(ctx); perReqToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+perReqToken)
+	} else if t.token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+t.token)
 	}
 

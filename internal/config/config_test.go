@@ -1295,3 +1295,266 @@ upstreams:
 		t.Error("expected nil TLS when not configured")
 	}
 }
+
+func TestOAuthProviderConfigLoads(t *testing.T) {
+	yaml := `
+oauth_providers:
+  github:
+    auth_url: https://github.com/login/oauth/authorize
+    token_url: https://github.com/login/oauth/access_token
+    client_id_env: GH_CLIENT_ID
+    client_secret_env: GH_CLIENT_SECRET
+    scopes: ["repo", "read:org"]
+
+upstreams:
+  - name: github-mcp
+    transport: streamable-http
+    url: https://github-mcp.example.com
+    auth:
+      type: oauth
+      provider: github
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	providers := cfg.OAuthProviders()
+	if len(providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(providers))
+	}
+	p := providers[0]
+	if p.Name() != "github" {
+		t.Errorf("provider name = %q, want github", p.Name())
+	}
+	if p.AuthURL() != "https://github.com/login/oauth/authorize" {
+		t.Errorf("auth_url = %q", p.AuthURL())
+	}
+	if p.TokenURL() != "https://github.com/login/oauth/access_token" {
+		t.Errorf("token_url = %q", p.TokenURL())
+	}
+	if p.ClientIDEnv() != "GH_CLIENT_ID" {
+		t.Errorf("client_id_env = %q", p.ClientIDEnv())
+	}
+	if p.ClientSecretEnv() != "GH_CLIENT_SECRET" {
+		t.Errorf("client_secret_env = %q", p.ClientSecretEnv())
+	}
+	scopes := p.Scopes()
+	if len(scopes) != 2 || scopes[0] != "repo" || scopes[1] != "read:org" {
+		t.Errorf("scopes = %v", scopes)
+	}
+
+	// Upstream auth should reference the provider.
+	h := cfg.Upstreams()[0].(*HTTPUpstreamConfig)
+	if h.Auth() == nil {
+		t.Fatal("expected auth config")
+	}
+	if h.Auth().Type() != "oauth" {
+		t.Errorf("auth.type = %q, want oauth", h.Auth().Type())
+	}
+	if h.Auth().Provider() != "github" {
+		t.Errorf("auth.provider = %q, want github", h.Auth().Provider())
+	}
+
+	// OAuthProvider() lookup.
+	found := cfg.OAuthProvider("github")
+	if found == nil {
+		t.Fatal("OAuthProvider(github) returned nil")
+	}
+	if found.Name() != "github" {
+		t.Errorf("found provider name = %q", found.Name())
+	}
+	if cfg.OAuthProvider("nonexistent") != nil {
+		t.Error("expected nil for nonexistent provider")
+	}
+}
+
+func TestOAuthProviderMissingFields(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "missing auth_url",
+			yaml: `
+oauth_providers:
+  github:
+    token_url: https://example.com/token
+    client_id_env: X
+    client_secret_env: Y
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`,
+		},
+		{
+			name: "missing token_url",
+			yaml: `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    client_id_env: X
+    client_secret_env: Y
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`,
+		},
+		{
+			name: "missing client_id_env",
+			yaml: `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_secret_env: Y
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`,
+		},
+		{
+			name: "missing client_secret_env",
+			yaml: `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_id_env: X
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("expected error for missing field")
+			}
+		})
+	}
+}
+
+func TestOAuthUpstreamMissingProvider(t *testing.T) {
+	yaml := `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_id_env: X
+    client_secret_env: Y
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    auth:
+      type: oauth
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when auth.type=oauth but provider is missing")
+	}
+}
+
+func TestOAuthUpstreamUnknownProvider(t *testing.T) {
+	yaml := `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_id_env: X
+    client_secret_env: Y
+
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    auth:
+      type: oauth
+      provider: nonexistent
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for unknown provider reference")
+	}
+}
+
+func TestOAuthUpstreamRejectsRoleCredentials(t *testing.T) {
+	yaml := `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_id_env: X
+    client_secret_env: Y
+
+upstreams:
+  - name: github-mcp
+    transport: streamable-http
+    url: https://example.com
+    auth:
+      type: oauth
+      provider: github
+
+roles:
+  developer:
+    allowed_tools: ["*"]
+    credentials:
+      github-mcp: GH_TOKEN
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when role has credentials for OAuth upstream")
+	}
+}
+
+func TestOAuthUpstreamInvalidAuthType(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: svc
+    transport: streamable-http
+    url: https://example.com
+    auth:
+      type: basic
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid auth type")
+	}
+}
+
+func TestBearerUpstreamStillWorks(t *testing.T) {
+	yaml := `
+oauth_providers:
+  github:
+    auth_url: https://example.com/auth
+    token_url: https://example.com/token
+    client_id_env: X
+    client_secret_env: Y
+
+upstreams:
+  - name: internal
+    transport: streamable-http
+    url: https://example.com
+    auth:
+      type: bearer
+      token_env: INTERNAL_TOKEN
+
+roles:
+  developer:
+    allowed_tools: ["*"]
+    credentials:
+      internal: INTERNAL_TOKEN
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

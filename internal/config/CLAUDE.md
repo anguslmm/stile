@@ -16,6 +16,8 @@ Loads and validates Stile gateway configuration from YAML. Returns valid objects
 - **`ServerTLSConfig`**, **`UpstreamTLSConfig`** — Inbound and outbound TLS settings respectively.
 - **`RedisConfig`** — Shared Redis settings used by both rate limiting and health backends.
 - **`OIDCConfig`** — OIDC authentication settings: issuer, audience, caller_claim, validation mode (jwt/userinfo), auto_provision, default_roles, allowed_domains. Returned by `Config.OIDC()` (nil when not configured). Slice getters return copies.
+- **`OAuthProviderConfig`** — OAuth provider settings: auth_url, token_url, client_id_env, client_secret_env, scopes. Stored in top-level `oauth_providers` map. Returned by `Config.OAuthProviders()` (slice) and `Config.OAuthProvider(name)` (single lookup, nil if not found).
+- **`AuthConfig`** — Upstream auth settings: `Type()` (`"bearer"` or `"oauth"`), `TokenEnv()` (for bearer), `Provider()` (for oauth, references an `oauth_providers` key).
 - **`RateLimitDefaults`**, **`LoggingConfig`**, **`AuditConfig`**, **`TelemetryConfig`**, **`TracesConfig`**, **`HealthConfig`** — Subsystem config value types returned by `Config` getters.
 
 ## Key Exported Functions
@@ -34,3 +36,4 @@ Loads and validates Stile gateway configuration from YAML. Returns valid objects
 - **`server.db_path` is deprecated** in favour of `server.database`; both cannot be set simultaneously. `db_path` is silently promoted to a `DatabaseConfig{driver: "sqlite"}`.
 - **Health Redis falls back** to `rate_limits.redis` if `health.redis` is not set explicitly.
 - **Compile-time interface checks** are present for both upstream config implementations.
+- **OAuth cross-validation:** If an upstream has `auth.type: oauth`, the referenced provider must exist in `oauth_providers`, and no role may have `credentials` for that upstream (credentials are per-user, not per-role).

@@ -60,14 +60,16 @@ This is the core path:
 
 The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (single instance), `RedisRateLimiter` uses Redis sliding windows (multi-instance). `Allow()` returns a `*RateLimitResult` containing the allow/deny decision plus rate limit state (limit, remaining, reset time). This is used to populate `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers on every `tools/call` response. On denial, a `Retry-After` header is also included. The headers report the most restrictive of the applicable limits.
 
-**e. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
+**e. OAuth token injection** — if an `UpstreamAuthResolver` is configured (any upstream uses `auth.type: oauth`), the proxy calls `resolver.ResolveToken(ctx, callerName, upstreamName)`. If the upstream requires OAuth and the user has connected the provider, the per-user access token is attached to the context. If the token is expired, it's automatically refreshed via the provider's token endpoint. If the user hasn't connected, a clear JSON-RPC error is returned. The token is read from context in `HTTPTransport.RoundTrip` and injected as the `Authorization: Bearer` header, taking priority over any static token.
+
+**f. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
 1. **Circuit breaker** — if the upstream's circuit is open, the request fails immediately with `"upstream circuit open"`. After a cooldown period, one probe request is allowed through (half-open state). If it succeeds, the circuit closes; if it fails, the circuit reopens.
 2. **Retry loop** — on retryable errors (connection failures or configured HTTP status codes like 502/503/504), the request is retried with jittered exponential backoff up to `max_attempts`.
 3. **Actual transport** — sends the JSON-RPC request to the upstream. Per-upstream `timeout` controls the HTTP `ResponseHeaderTimeout`.
 
 The `Transport` interface hides whether the underlying transport is an HTTP POST or writing to a child process's stdin.
 
-**f. Response** — `RoundTrip` returns a `TransportResult`, which is either:
+**g. Response** — `RoundTrip` returns a `TransportResult`, which is either:
 - `JSONResult` — upstream returned `application/json`. The response is already parsed.
 - `StreamResult` — upstream returned `text/event-stream` (SSE). The stream is still open.
 
@@ -75,7 +77,7 @@ The `Transport` interface hides whether the underlying transport is an HTTP POST
 - JSON results get marshaled and written
 - Stream results get piped through with flush-per-chunk until EOF or client disconnect
 
-**g. Audit/metrics** — throughout step 6, the proxy records the caller, tool, upstream, status, and latency to structured logs, Prometheus counters/histograms, and the audit log database.
+**h. Audit/metrics** — throughout step 6, the proxy records the caller, tool, upstream, status, and latency to structured logs, Prometheus counters/histograms, and the audit log database.
 
 ## 7. Distributed tracing
 

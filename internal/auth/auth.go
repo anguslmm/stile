@@ -56,6 +56,7 @@ type KeyLookupResult struct {
 
 type contextKey struct{}
 type keyLabelKey struct{}
+type upstreamTokenKey struct{}
 
 // CallerFromContext retrieves the Caller from the request context.
 // Returns nil if no caller is set (auth disabled).
@@ -79,6 +80,18 @@ func KeyLabelFromContext(ctx context.Context) string {
 // ContextWithKeyLabel returns a new context with the given key label attached.
 func ContextWithKeyLabel(ctx context.Context, label string) context.Context {
 	return context.WithValue(ctx, keyLabelKey{}, label)
+}
+
+// UpstreamTokenFromContext retrieves the per-request OAuth token for the upstream.
+// Returns "" if no token is set (static auth or no auth).
+func UpstreamTokenFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(upstreamTokenKey{}).(string)
+	return s
+}
+
+// ContextWithUpstreamToken returns a new context with the given upstream token attached.
+func ContextWithUpstreamToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, upstreamTokenKey{}, token)
 }
 
 // CallerStore looks up callers by API key hash.

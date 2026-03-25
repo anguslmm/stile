@@ -24,13 +24,22 @@ import (
 	"github.com/anguslmm/stile/internal/transport"
 )
 
+// UpstreamAuthResolver looks up per-user OAuth tokens for upstreams.
+type UpstreamAuthResolver interface {
+	// ResolveToken returns the bearer token for the given user and upstream.
+	// Returns ("", nil) if the upstream doesn't use OAuth.
+	// Returns an error if the user hasn't connected the required provider.
+	ResolveToken(ctx context.Context, callerName, upstreamName string) (string, error)
+}
+
 // Handler dispatches MCP tool calls to the correct upstream via the router.
 type Handler struct {
-	router      *router.RouteTable
-	rateLimiter policy.RateLimiter
-	metrics     *metrics.Metrics
-	auditStore  audit.Store
-	tracer      trace.Tracer
+	router       *router.RouteTable
+	rateLimiter  policy.RateLimiter
+	metrics      *metrics.Metrics
+	auditStore   audit.Store
+	tracer       trace.Tracer
+	authResolver UpstreamAuthResolver
 }
 
 // NewHandler creates a Handler backed by the given RouteTable.
@@ -49,6 +58,11 @@ type HandlerOption func(*Handler)
 // WithTracer sets the tracer for the proxy handler.
 func WithTracer(t trace.Tracer) HandlerOption {
 	return func(h *Handler) { h.tracer = t }
+}
+
+// WithAuthResolver sets the upstream auth resolver for OAuth token injection.
+func WithAuthResolver(r UpstreamAuthResolver) HandlerOption {
+	return func(h *Handler) { h.authResolver = r }
 }
 
 // HandleToolsList returns the merged tool list from all upstreams,
@@ -185,11 +199,25 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		routeSpan.End()
 	}
 
-	// Upstream round-trip span.
+	// Resolve per-user OAuth token if configured for this upstream.
 	roundTripCtx := routeCtx
+	if h.authResolver != nil {
+		token, err := h.authResolver.ResolveToken(routeCtx, callerName, upstreamName)
+		if err != nil {
+			h.setSpanError(ctx, "oauth token error")
+			h.recordRequest(ctx, callerName, "tools/call", params.Name, upstreamName, "error", req.Params, start)
+			writeJSONResponse(w, jsonrpc.NewErrorResponse(req.ID, -32000, err.Error()))
+			return
+		}
+		if token != "" {
+			roundTripCtx = auth.ContextWithUpstreamToken(roundTripCtx, token)
+		}
+	}
+
+	// Upstream round-trip span.
 	var rtSpan trace.Span
 	if h.tracer != nil {
-		roundTripCtx, rtSpan = h.tracer.Start(routeCtx, "upstream.RoundTrip", trace.WithAttributes(
+		roundTripCtx, rtSpan = h.tracer.Start(roundTripCtx, "upstream.RoundTrip", trace.WithAttributes(
 			attribute.String("mcp.upstream", upstreamName),
 		))
 	}

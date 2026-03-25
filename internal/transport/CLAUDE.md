@@ -8,7 +8,7 @@ Defines the `Transport` interface and its two implementations (HTTP and stdio) f
 - **`TransportResult`** — Sealed union (unexported marker method) representing a response. Either `*JSONResult` or `*StreamResult`. Both implement `Resolve() (*jsonrpc.Response, error)` and `WriteResponse(ctx, w, tracer)`.
 - **`JSONResult`** — Wraps a `*jsonrpc.Response` for `application/json` upstreams.
 - **`StreamResult`** — Wraps an `io.ReadCloser` for `text/event-stream` upstreams. Caller or `Resolve`/`WriteResponse` is responsible for closing.
-- **`HTTPTransport`** — Sends JSON-RPC over HTTP POST. Supports bearer token auth, custom TLS (CA, mTLS, skip-verify), and W3C trace context propagation. Health tracked via consecutive failure count (threshold: 3).
+- **`HTTPTransport`** — Sends JSON-RPC over HTTP POST. Supports bearer token auth (static from env or per-request from context via `auth.UpstreamTokenFromContext`), custom TLS (CA, mTLS, skip-verify), and W3C trace context propagation. Health tracked via consecutive failure count (threshold: 3). Per-request token from context takes priority over static token.
 - **`StdioTransport`** — Spawns a child process and communicates via line-delimited JSON on stdin/stdout. Requests are serialized with a mutex (stdio is inherently sequential). Supports automatic restart with exponential backoff (up to 10 restarts, 1s–60s). Marks permanently failed after max restarts.
 - **`SSEReader`** / **`SSEEvent`** — Minimal SSE parser (event + data fields only; ignores id, retry, comments).
 - **`ToolSchema`** — MCP tool definition (`name`, `description`, `inputSchema`).
