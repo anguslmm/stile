@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -44,15 +45,27 @@ func WithAdminKeyHash(hash [32]byte) Option {
 	return func(h *Handler) { h.adminKeyHash = hash }
 }
 
+// WithTokenStore enables the connections endpoints for managing OAuth tokens.
+func WithTokenStore(ts auth.TokenStore) Option {
+	return func(h *Handler) { h.tokenStore = ts }
+}
+
+// WithOAuthProviders sets the configured OAuth provider names for the connections UI.
+func WithOAuthProviders(names []string) Option {
+	return func(h *Handler) { h.oauthProviders = names }
+}
+
 // Handler serves admin API endpoints for caller and key management.
 type Handler struct {
-	store         auth.Store
-	router        *router.RouteTable
-	healthChecker *health.Checker
-	configView    ConfigView
-	startTime     time.Time
-	auditReader   audit.Reader
-	adminKeyHash  [32]byte
+	store          auth.Store
+	router         *router.RouteTable
+	healthChecker  *health.Checker
+	configView     ConfigView
+	startTime      time.Time
+	auditReader    audit.Reader
+	adminKeyHash   [32]byte
+	tokenStore     auth.TokenStore
+	oauthProviders []string
 }
 
 // SessionCheck validates session cookies on incoming requests.
@@ -93,6 +106,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/config", h.getConfig)
 	mux.HandleFunc("GET /admin/status", h.getStatus)
 	mux.HandleFunc("GET /admin/audit", h.queryAudit)
+	mux.HandleFunc("GET /admin/connections", h.listConnections)
+	mux.HandleFunc("DELETE /admin/connections/{provider}", h.deleteConnection)
+	mux.HandleFunc("PUT /admin/connections/{provider}", h.putConnection)
 	h.registerUI(mux)
 }
 
@@ -441,6 +457,123 @@ func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.buildStatus())
+}
+
+// --- Connection endpoints ---
+
+func (h *Handler) listConnections(w http.ResponseWriter, r *http.Request) {
+	if h.tokenStore == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"connections": []any{},
+			"message":     "OAuth not configured",
+		})
+		return
+	}
+
+	caller := r.URL.Query().Get("caller")
+	if caller == "" {
+		caller = r.URL.Query().Get("user")
+	}
+
+	// Build the list of all providers and their connection status.
+	type connectionItem struct {
+		Provider  string     `json:"provider"`
+		Connected bool       `json:"connected"`
+		Expiry    *time.Time `json:"expiry,omitempty"`
+		Scopes    string     `json:"scopes,omitempty"`
+		Expired   bool       `json:"expired,omitempty"`
+	}
+
+	var items []connectionItem
+	for _, prov := range h.oauthProviders {
+		item := connectionItem{Provider: prov}
+		if caller != "" {
+			token, err := h.tokenStore.GetToken(context.Background(), caller, prov)
+			if err == nil {
+				item.Connected = true
+				if !token.Expiry.IsZero() {
+					item.Expiry = &token.Expiry
+					item.Expired = token.Expired()
+				}
+				item.Scopes = token.Scopes
+			}
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []connectionItem{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"connections": items})
+}
+
+func (h *Handler) deleteConnection(w http.ResponseWriter, r *http.Request) {
+	if h.tokenStore == nil {
+		writeJSON(w, http.StatusNotFound, errorBody("OAuth not configured"))
+		return
+	}
+
+	provider := r.PathValue("provider")
+	caller := r.URL.Query().Get("caller")
+	if caller == "" {
+		caller = r.URL.Query().Get("user")
+	}
+	if caller == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("caller query parameter is required"))
+		return
+	}
+
+	if err := h.tokenStore.DeleteToken(context.Background(), caller, provider); err != nil {
+		if errors.Is(err, auth.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("connection not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) putConnection(w http.ResponseWriter, r *http.Request) {
+	if h.tokenStore == nil {
+		writeJSON(w, http.StatusNotFound, errorBody("OAuth not configured"))
+		return
+	}
+
+	provider := r.PathValue("provider")
+
+	var req struct {
+		Caller       string `json:"caller"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid JSON"))
+		return
+	}
+	if req.Caller == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("caller is required"))
+		return
+	}
+	if req.AccessToken == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("access_token is required"))
+		return
+	}
+
+	token := &auth.OAuthToken{
+		AccessToken:  req.AccessToken,
+		RefreshToken: req.RefreshToken,
+		TokenType:    "Bearer",
+	}
+
+	if err := h.tokenStore.StoreToken(context.Background(), req.Caller, provider, token); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("internal error"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":   "ok",
+		"caller":   req.Caller,
+		"provider": provider,
+	})
 }
 
 // --- Response types ---

@@ -44,6 +44,8 @@ func (h *Handler) registerUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/ui/callers/{name}/keys/{id}/revoke", h.uiRevokeKey)
 	mux.HandleFunc("POST /admin/ui/callers/{name}/roles", h.uiAssignRole)
 	mux.HandleFunc("POST /admin/ui/callers/{name}/roles/{role}/unassign", h.uiUnassignRole)
+	mux.HandleFunc("GET /admin/ui/connections", h.uiConnections)
+	mux.HandleFunc("POST /admin/ui/connections/{provider}/disconnect", h.uiDisconnect)
 	mux.HandleFunc("GET /admin/ui/config", h.uiConfig)
 	mux.HandleFunc("GET /admin/ui/audit", h.uiAudit)
 }
@@ -250,6 +252,71 @@ func (h *Handler) uiUnassignRole(w http.ResponseWriter, r *http.Request) {
 	role := r.PathValue("role")
 	h.store.UnassignRole(name, role)
 	http.Redirect(w, r, "/admin/ui/callers/"+name, http.StatusFound)
+}
+
+func (h *Handler) uiConnections(w http.ResponseWriter, r *http.Request) {
+	caller := r.URL.Query().Get("caller")
+
+	type connView struct {
+		Provider  string
+		Connected bool
+		Expired   bool
+		Scopes    string
+		Expiry    *time.Time
+	}
+
+	var connections []connView
+	if h.tokenStore != nil {
+		for _, prov := range h.oauthProviders {
+			cv := connView{Provider: prov}
+			if caller != "" {
+				token, err := h.tokenStore.GetToken(r.Context(), caller, prov)
+				if err == nil {
+					cv.Connected = true
+					if !token.Expiry.IsZero() {
+						cv.Expiry = &token.Expiry
+						cv.Expired = token.Expired()
+					}
+					cv.Scopes = token.Scopes
+				}
+			}
+			connections = append(connections, cv)
+		}
+	}
+
+	data := struct {
+		pageData
+		Providers   []string
+		Connections []connView
+		Caller      string
+		Flash       string
+	}{
+		pageData:    pageData{Title: "Connections", Nav: "connections"},
+		Providers:   h.oauthProviders,
+		Connections: connections,
+		Caller:      caller,
+		Flash:       consumeFlash(r, w),
+	}
+	renderPage(w, "connections.html", data)
+}
+
+func (h *Handler) uiDisconnect(w http.ResponseWriter, r *http.Request) {
+	provider := r.PathValue("provider")
+	caller := r.URL.Query().Get("caller")
+
+	if h.tokenStore != nil && caller != "" {
+		if err := h.tokenStore.DeleteToken(r.Context(), caller, provider); err != nil {
+			setFlash(w, "Could not disconnect: "+err.Error())
+		} else {
+			setFlash(w, "Disconnected "+provider)
+		}
+	}
+
+	dest := "/admin/ui/connections"
+	if caller != "" {
+		dest += "?caller=" + url.QueryEscape(caller)
+	}
+	http.Redirect(w, r, dest, http.StatusFound)
 }
 
 func (h *Handler) uiConfig(w http.ResponseWriter, _ *http.Request) {

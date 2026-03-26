@@ -1,0 +1,57 @@
+{{define "content"}}
+<div class="card">
+  <h2>OAuth Connections</h2>
+  {{if .Flash}}<div class="flash flash-success">{{.Flash}}</div>{{end}}
+  {{if not .Providers}}
+    <div class="empty">No OAuth providers configured.</div>
+  {{else}}
+    <form method="GET" action="/admin/ui/connections" class="filter-form" style="margin-bottom:1rem">
+      <div class="field">
+        <label for="caller">User</label>
+        <input type="text" id="caller" name="caller" value="{{.Caller}}" placeholder="alice@example.com">
+      </div>
+      <button type="submit" class="btn btn-primary">Look up</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Provider</th>
+          <th>Status</th>
+          <th>Scopes</th>
+          <th>Expiry</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Connections}}
+        <tr>
+          <td><strong>{{.Provider}}</strong></td>
+          <td>
+            {{if .Connected}}
+              {{if .Expired}}
+                <span class="badge badge-yellow">Expired</span>
+              {{else}}
+                <span class="badge badge-green">Connected</span>
+              {{end}}
+            {{else}}
+              <span class="badge badge-gray">Not connected</span>
+            {{end}}
+          </td>
+          <td class="mono">{{.Scopes}}</td>
+          <td>{{if .Expiry}}{{.Expiry.Format "2006-01-02 15:04 UTC"}}{{else}}&mdash;{{end}}</td>
+          <td>
+            {{if .Connected}}
+              <form method="POST" action="/admin/ui/connections/{{.Provider}}/disconnect?caller={{$.Caller}}" style="display:inline">
+                <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
+              </form>
+            {{else if $.Caller}}
+              <a href="/oauth/connect/{{.Provider}}" class="btn btn-primary btn-sm">Connect</a>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  {{end}}
+</div>
+{{end}}

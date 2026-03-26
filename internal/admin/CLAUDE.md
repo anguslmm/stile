@@ -16,6 +16,8 @@ HTTP admin API for managing callers, API keys, and roles at runtime. Includes an
 - **`WithConfig(cfg *config.Config) Option`** — Enables the `/admin/config` endpoint with a sanitized config view.
 - **`WithStartTime(t time.Time) Option`** — Sets the gateway start time for uptime reporting.
 - **`WithAuditReader(r audit.Reader) Option`** — Enables the `/admin/audit` query endpoint.
+- **`WithTokenStore(ts auth.TokenStore) Option`** — Enables the `/admin/connections` endpoints for managing OAuth tokens.
+- **`WithOAuthProviders(names []string) Option`** — Sets the configured OAuth provider names for the connections UI.
 - **`NewConfigView(cfg *config.Config) ConfigView`** — Produces a sanitized, JSON-safe view of the running config.
 - **`(h *Handler) Register(mux *http.ServeMux)`** — Registers all routes (API + UI) on the provided mux.
 - **`NewClient(baseURL, adminKey string) *Client`** — Constructs the remote client; sends `Authorization: Bearer <adminKey>` on every request.
@@ -32,6 +34,9 @@ HTTP admin API for managing callers, API keys, and roles at runtime. Includes an
 - `GET /admin/config` — sanitized running configuration (JSON)
 - `GET /admin/status` — upstream health, caller count, uptime (JSON)
 - `GET /admin/audit` — audit log query with filters (JSON)
+- `GET /admin/connections` — list OAuth connections for a user (`?caller=...`)
+- `DELETE /admin/connections/{provider}` — disconnect a user's OAuth token (`?caller=...`)
+- `PUT /admin/connections/{provider}` — admin escape hatch: insert/overwrite a token for a user
 
 ### Web UI (htmx + Go templates)
 - `GET /admin/ui/` — dashboard (upstream health, caller count, uptime)
@@ -40,6 +45,7 @@ HTTP admin API for managing callers, API keys, and roles at runtime. Includes an
 - `POST /admin/ui/callers/{name}/keys` — generate API key (renders detail page with key shown once)
 - `POST /admin/ui/callers/{name}/roles` — assign role (redirects to detail)
 - `GET /admin/ui/config` — read-only config viewer (formatted JSON)
+- `GET /admin/ui/connections` — OAuth connections management (list providers, connect/disconnect per user)
 - `GET /admin/ui/audit` — filterable, paginated audit log browser
 
 ## Design Notes
@@ -52,3 +58,4 @@ HTTP admin API for managing callers, API keys, and roles at runtime. Includes an
 - The embedded UI uses htmx (loaded from CDN) + Go html/template. Templates are embedded via `embed.FS`. No build step required.
 - Config viewer only shows sanitized data — DSNs, passwords, TLS key paths are stripped. Env var names for credentials are shown.
 - The UI is automatically gated behind the same admin key auth that protects `/admin/*` routes.
+- Connection endpoints gracefully return "OAuth not configured" when no `TokenStore` is wired. The `PUT` endpoint is an admin escape hatch for scripted testing / recovery — it accepts a raw access token and stores it directly, bypassing the OAuth flow.

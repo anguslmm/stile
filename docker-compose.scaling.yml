@@ -52,6 +52,9 @@ services:
       - ./configs/scaling.yaml:/etc/stile/config.yaml:ro
     environment:
       - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - MOCK_OAUTH_CLIENT_ID=mock-client
+      - MOCK_OAUTH_CLIENT_SECRET=mock-secret
+      - STILE_BASE_URL=http://localhost:8080
     command: ["-config", "/etc/stile/config.yaml"]
     depends_on:
       postgres:
@@ -63,6 +66,10 @@ services:
       github-wrapper:
         condition: service_started
       fetch-wrapper:
+        condition: service_started
+      mock-oauth:
+        condition: service_started
+      mock-oauth-upstream:
         condition: service_started
       jaeger:
         condition: service_started
@@ -73,6 +80,9 @@ services:
       - ./configs/scaling.yaml:/etc/stile/config.yaml:ro
     environment:
       - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - MOCK_OAUTH_CLIENT_ID=mock-client
+      - MOCK_OAUTH_CLIENT_SECRET=mock-secret
+      - STILE_BASE_URL=http://localhost:8080
     command: ["-config", "/etc/stile/config.yaml"]
     depends_on:
       postgres:
@@ -84,6 +94,10 @@ services:
       github-wrapper:
         condition: service_started
       fetch-wrapper:
+        condition: service_started
+      mock-oauth:
+        condition: service_started
+      mock-oauth-upstream:
         condition: service_started
       jaeger:
         condition: service_started
@@ -124,6 +138,20 @@ services:
     depends_on:
       jaeger:
         condition: service_started
+
+  # --- Mock OAuth provider for testing outbound OAuth flow ---
+  mock-oauth:
+    build: .
+    entrypoint: ["/mock-oauth-provider"]
+    command: ["-port", "9100"]
+    ports:
+      - "9100:9100"
+
+  # --- Mock upstream that echoes the token it receives ---
+  mock-oauth-upstream:
+    build: .
+    entrypoint: ["/mock-oauth-upstream"]
+    command: ["-port", "9101"]
 
   # --- OIDC provider (for testing) ---
   dex:

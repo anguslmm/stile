@@ -4,6 +4,8 @@
 # Go
 /stile
 /gateway
+/mock-oauth-provider
+/mock-oauth-upstream
 *.exe
 *.test
 *.out

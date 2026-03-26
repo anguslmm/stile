@@ -53,13 +53,13 @@ This document tracks the status of each implementation task. Agents should read 
 | 33.1 | OAuth provider config and token store | [task-33.md](tasks/task-33.md) | done |
 | 33.2 | Per-request token injection | [task-33.md](tasks/task-33.md) | done |
 | 33.3 | OAuth authorization code flow endpoints | [task-33.md](tasks/task-33.md) | done |
-| 34 | Connections UI and local OAuth testing | [task-34.md](tasks/task-34.md) | todo |
-| 34.1 | Connections admin API | [task-34.md](tasks/task-34.md) | todo |
-| 34.2 | Connections dashboard page | [task-34.md](tasks/task-34.md) | todo |
-| 34.3 | Mock OAuth provider | [task-34.md](tasks/task-34.md) | todo |
-| 34.4 | Token-echo upstream | [task-34.md](tasks/task-34.md) | todo |
-| 34.5 | Docker compose and config wiring | [task-34.md](tasks/task-34.md) | todo |
-| 34.6 | End-to-end test script | [task-34.md](tasks/task-34.md) | todo |
+| 34 | Connections UI and local OAuth testing | [task-34.md](tasks/task-34.md) | done |
+| 34.1 | Connections admin API | [task-34.md](tasks/task-34.md) | done |
+| 34.2 | Connections dashboard page | [task-34.md](tasks/task-34.md) | done |
+| 34.3 | Mock OAuth provider | [task-34.md](tasks/task-34.md) | done |
+| 34.4 | Token-echo upstream | [task-34.md](tasks/task-34.md) | done |
+| 34.5 | Docker compose and config wiring | [task-34.md](tasks/task-34.md) | done |
+| 34.6 | End-to-end test script | [task-34.md](tasks/task-34.md) | done |
 | 35 | Tool naming and upstream attribution | [task-35.md](tasks/task-35.md) | todo |
 
 ## Notes

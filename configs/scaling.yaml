@@ -10,6 +10,14 @@ server:
   shutdown_timeout: "30s"
   auth_cache_ttl: "5m"
 
+oauth_providers:
+  mock:
+    auth_url: http://mock-oauth:9100/authorize
+    token_url: http://mock-oauth:9100/token
+    client_id_env: MOCK_OAUTH_CLIENT_ID       # "mock-client"
+    client_secret_env: MOCK_OAUTH_CLIENT_SECRET # "mock-secret"
+    scopes: ["read", "write"]
+
 upstreams:
   - name: github
     transport: streamable-http
@@ -20,6 +28,13 @@ upstreams:
     transport: streamable-http
     url: http://fetch-wrapper:9091/mcp
     rate_limit: "1000/min"
+
+  - name: mock-oauth-tools
+    transport: streamable-http
+    url: http://mock-oauth-upstream:9101/mcp
+    auth:
+      type: oauth
+      provider: mock
 
 roles:
   agent:

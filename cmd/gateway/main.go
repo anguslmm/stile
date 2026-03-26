@@ -187,6 +187,14 @@ func main() {
 				adminOpts = append(adminOpts, admin.WithAuditReader(reader))
 			}
 		}
+		if tokenStore != nil {
+			adminOpts = append(adminOpts, admin.WithTokenStore(tokenStore))
+			provNames := make([]string, len(cfg.OAuthProviders()))
+			for i, p := range cfg.OAuthProviders() {
+				provNames[i] = p.Name()
+			}
+			adminOpts = append(adminOpts, admin.WithOAuthProviders(provNames))
+		}
 		adminHandler := admin.NewHandler(callerStore, rt, adminOpts...)
 		opts.AdminHandler = adminHandler
 

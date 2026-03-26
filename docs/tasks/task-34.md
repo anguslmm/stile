@@ -1,6 +1,6 @@
 # Task 34 — Connections UI and local OAuth testing infrastructure
 
-Status: **todo**
+Status: **done**
 
 Depends on: **Task 33** (outbound OAuth core — token store, injection, and flow endpoints must exist)
 
