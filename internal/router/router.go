@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,17 +19,20 @@ import (
 
 // Route maps a tool to the upstream that owns it.
 type Route struct {
-	Tool     transport.ToolSchema
-	Upstream *Upstream
+	Tool         transport.ToolSchema
+	Upstream     *Upstream
+	OriginalName string // tool name before prefix was applied
 }
 
 // Upstream holds a transport and its discovered tools.
 type Upstream struct {
-	Name        string
-	Transport   transport.Transport
-	Tools       []transport.ToolSchema
-	Stale       bool
-	LastRefresh time.Time
+	Name           string
+	Transport      transport.Transport
+	Tools          []transport.ToolSchema // original tools from discovery
+	PrefixedTools  []transport.ToolSchema // tools with prefix and annotations applied
+	Prefix         string                 // resolved prefix ("" means no prefix)
+	Stale          bool
+	LastRefresh    time.Time
 }
 
 // UpstreamStatus reports the state of an upstream after a refresh.
@@ -74,9 +78,11 @@ func New(transports map[string]transport.Transport, configs []config.UpstreamCon
 			slog.Warn("no transport for upstream, skipping", "upstream", cfg.Name())
 			continue
 		}
+		prefix := resolvePrefix(cfg)
 		rt.upstreams = append(rt.upstreams, &Upstream{
 			Name:      cfg.Name(),
 			Transport: t,
+			Prefix:    prefix,
 		})
 	}
 
@@ -102,14 +108,15 @@ func (rt *RouteTable) Resolve(toolName string) (*Route, error) {
 	return route, nil
 }
 
-// ListTools returns the merged list of all tools from all upstreams.
+// ListTools returns the merged list of all tools from all upstreams,
+// with prefixes and upstream attribution annotations applied.
 func (rt *RouteTable) ListTools() []transport.ToolSchema {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
 	var tools []transport.ToolSchema
 	for _, u := range rt.upstreams {
-		tools = append(tools, u.Tools...)
+		tools = append(tools, u.PrefixedTools...)
 	}
 	return tools
 }
@@ -207,19 +214,38 @@ func (rt *RouteTable) RefreshUpstream(ctx context.Context, name string) error {
 }
 
 // rebuildEntriesLocked rebuilds the route table entries from all upstreams.
-// First upstream in order wins for duplicate tool names. Must be called with mu held.
+// It applies tool name prefixes and upstream attribution annotations.
+// First upstream in order wins for duplicate prefixed tool names. Must be called with mu held.
 func (rt *RouteTable) rebuildEntriesLocked() {
 	rt.entries = make(map[string]*Route)
 	for _, u := range rt.upstreams {
+		u.PrefixedTools = make([]transport.ToolSchema, 0, len(u.Tools))
 		for _, tool := range u.Tools {
-			if _, exists := rt.entries[tool.Name]; exists {
-				slog.Warn("duplicate tool, keeping first", "tool", tool.Name, "upstream", u.Name)
+			prefixedName := applyPrefix(u.Prefix, tool.Name)
+
+			// Build the prefixed tool with annotations.
+			prefixed := transport.ToolSchema{
+				Name:        prefixedName,
+				Description: tool.Description,
+				InputSchema: tool.InputSchema,
+				Annotations: map[string]any{
+					"x-stile-upstream": u.Name,
+				},
+			}
+			if u.Prefix != "" {
+				prefixed.Annotations["x-stile-original-name"] = tool.Name
+			}
+
+			if _, exists := rt.entries[prefixedName]; exists {
+				slog.Warn("duplicate tool, keeping first", "tool", prefixedName, "upstream", u.Name)
 				continue
 			}
-			rt.entries[tool.Name] = &Route{
-				Tool:     tool,
-				Upstream: u,
+			rt.entries[prefixedName] = &Route{
+				Tool:         prefixed,
+				Upstream:     u,
+				OriginalName: tool.Name,
 			}
+			u.PrefixedTools = append(u.PrefixedTools, prefixed)
 		}
 	}
 }
@@ -245,11 +271,13 @@ func (rt *RouteTable) StartBackgroundRefresh(interval time.Duration) {
 }
 
 // AddUpstream adds a new upstream to the route table and refreshes it.
+// prefix defaults to the upstream name if empty.
 func (rt *RouteTable) AddUpstream(name string, t transport.Transport) {
 	rt.mu.Lock()
 	rt.upstreams = append(rt.upstreams, &Upstream{
 		Name:      name,
 		Transport: t,
+		Prefix:    name,
 	})
 	rt.mu.Unlock()
 
@@ -303,6 +331,39 @@ func (rt *RouteTable) Close() {
 			u.Transport.Close()
 		}
 	})
+}
+
+// resolvePrefix determines the effective tool prefix for an upstream.
+// nil ToolPrefix → use upstream name (sanitized); empty string → no prefix; non-empty → use as-is.
+func resolvePrefix(cfg config.UpstreamConfig) string {
+	tp := cfg.ToolPrefix()
+	if tp == nil {
+		return sanitizePrefix(cfg.Name())
+	}
+	return *tp
+}
+
+// sanitizePrefix replaces characters not in [a-zA-Z0-9_] with underscores
+// so that upstream names with hyphens or dots produce valid tool prefixes.
+func sanitizePrefix(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// applyPrefix returns "prefix__name" if prefix is non-empty, otherwise just name.
+func applyPrefix(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "__" + name
 }
 
 func discoverTools(ctx context.Context, t transport.Transport) ([]transport.ToolSchema, error) {

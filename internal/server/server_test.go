@@ -274,7 +274,7 @@ func TestToolsCallEndToEnd(t *testing.T) {
 	req := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "tools/call",
-		"params":  map[string]any{"name": "greet", "arguments": map[string]any{}},
+		"params":  map[string]any{"name": "test__greet", "arguments": map[string]any{}},
 		"id":      1,
 	}
 
@@ -307,7 +307,7 @@ func TestToolsCallSSEEndToEnd(t *testing.T) {
 	req := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "tools/call",
-		"params":  map[string]any{"name": "stream-tool"},
+		"params":  map[string]any{"name": "test__stream-tool"},
 		"id":      1,
 	}
 

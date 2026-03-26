@@ -60,7 +60,8 @@ This document tracks the status of each implementation task. Agents should read 
 | 34.4 | Token-echo upstream | [task-34.md](tasks/task-34.md) | done |
 | 34.5 | Docker compose and config wiring | [task-34.md](tasks/task-34.md) | done |
 | 34.6 | End-to-end test script | [task-34.md](tasks/task-34.md) | done |
-| 35 | Tool naming and upstream attribution | [task-35.md](tasks/task-35.md) | todo |
+| 34.1 | Browser auth for OAuth connection flow | [task-34.1.md](tasks/task-34.1.md) | todo |
+| 35 | Tool naming and upstream attribution | [task-35.md](tasks/task-35.md) | done |
 
 ## Notes
 

@@ -5,7 +5,7 @@ Loads and validates Stile gateway configuration from YAML. Returns valid objects
 ## Key Exported Types
 
 - **`Config`** — Top-level immutable config. All fields unexported; accessed via getters that return value types or copies.
-- **`UpstreamConfig`** (interface) — Sealed interface for upstream config. Only two implementations exist in this package: `*HTTPUpstreamConfig` and `*StdioUpstreamConfig`. Type-switch on these to access transport-specific fields.
+- **`UpstreamConfig`** (interface) — Sealed interface for upstream config. Only two implementations exist in this package: `*HTTPUpstreamConfig` and `*StdioUpstreamConfig`. Type-switch on these to access transport-specific fields. Common methods: `Name()`, `Tools()`, `ToolPrefix()`, `RateLimit()`, `Timeout()`, `CircuitBreaker()`, `Retry()`.
 - **`HTTPUpstreamConfig`** — HTTP (streamable-http) upstream: URL, auth, TLS, resilience settings.
 - **`StdioUpstreamConfig`** — Stdio upstream: command slice, env map, resilience settings.
 - **`RoleConfig`** — Named role with glob-pattern `allowed_tools`, per-upstream credential env vars, and optional rate limit overrides.

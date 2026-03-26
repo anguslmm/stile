@@ -68,13 +68,13 @@ upstreams:
 		t.Fatalf("tools/list error: %v", resp.Error)
 	}
 	names := toolNames(resp)
-	if len(names) != 2 || !contains(names, "echo") || !contains(names, "add") {
+	if len(names) != 2 || !contains(names, "mock__echo") || !contains(names, "mock__add") {
 		t.Errorf("unexpected tools: %v", names)
 	}
 
 	// tools/call
 	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{
-		"name":      "echo",
+		"name":      "mock__echo",
 		"arguments": map[string]any{"text": "hello"},
 	}, "")
 	if resp.Error != nil {
@@ -112,7 +112,7 @@ upstreams:
 		t.Fatalf("tools/list error: %v", resp.Error)
 	}
 	names := toolNames(resp)
-	if !contains(names, "github-search") || !contains(names, "calculator") {
+	if !contains(names, "github__github-search") || !contains(names, "local__calculator") {
 		t.Errorf("expected tools from both upstreams, got: %v", names)
 	}
 
@@ -133,12 +133,12 @@ upstreams:
 		return transport.NewJSONResult(resp), nil
 	}
 
-	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "github-search"}, "")
+	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "github__github-search"}, "")
 	if !called1 {
 		t.Error("github-search not routed to github upstream")
 	}
 
-	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "calculator"}, "")
+	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "local__calculator"}, "")
 	if !called2 {
 		t.Error("calculator not routed to local upstream")
 	}
@@ -173,7 +173,7 @@ upstreams:
 	)
 
 	// Send tools/call and check the response is SSE-passthrough
-	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"stream-tool"},"id":1}`
+	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"sse_upstream__stream-tool"},"id":1}`
 	httpReq := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -212,9 +212,9 @@ upstreams:
     url: http://placeholder
 roles:
   github-role:
-    allowed_tools: ["github/*"]
+    allowed_tools: ["tools__github/*"]
   deploy-role:
-    allowed_tools: ["deploy/*"]
+    allowed_tools: ["tools__deploy/*"]
 `, dbPath)),
 		withTransport("tools", mt),
 		withAdminKey("test-admin-key"),
@@ -228,7 +228,7 @@ roles:
 func TestValidKeyAccessesAllowedTools(t *testing.T) {
 	gw, githubKey, _ := newAuthGateway(t)
 
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "github/search"}, githubKey)
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__github/search"}, githubKey)
 	if resp.Error != nil {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -237,7 +237,7 @@ func TestValidKeyAccessesAllowedTools(t *testing.T) {
 func TestValidKeyBlockedFromOtherTools(t *testing.T) {
 	gw, githubKey, _ := newAuthGateway(t)
 
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "deploy/run"}, githubKey)
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__deploy/run"}, githubKey)
 	if resp.Error == nil {
 		t.Fatal("expected access denied error")
 	}
@@ -273,14 +273,14 @@ func TestNoKeyRejected(t *testing.T) {
 func TestFilteredToolsList(t *testing.T) {
 	gw, githubKey, deployKey := newAuthGateway(t)
 
-	// github-user should only see github/* tools
+	// github-user should only see tools__github/* tools
 	resp := gw.jsonRPCRequest(t, "tools/list", nil, githubKey)
 	if resp.Error != nil {
 		t.Fatalf("tools/list error: %v", resp.Error)
 	}
 	names := toolNames(resp)
 	for _, n := range names {
-		if !strings.HasPrefix(n, "github/") {
+		if !strings.HasPrefix(n, "tools__github/") {
 			t.Errorf("github-user saw non-github tool: %s", n)
 		}
 	}
@@ -288,11 +288,11 @@ func TestFilteredToolsList(t *testing.T) {
 		t.Errorf("expected 2 github tools, got %d: %v", len(names), names)
 	}
 
-	// deploy-user should only see deploy/* tools
+	// deploy-user should only see tools__deploy/* tools
 	resp = gw.jsonRPCRequest(t, "tools/list", nil, deployKey)
 	names = toolNames(resp)
 	for _, n := range names {
-		if !strings.HasPrefix(n, "deploy/") {
+		if !strings.HasPrefix(n, "tools__deploy/") {
 			t.Errorf("deploy-user saw non-deploy tool: %s", n)
 		}
 	}
@@ -334,7 +334,7 @@ roles:
 	// Send requests rapidly — at least one should be rate limited
 	var rateLimited bool
 	for i := 0; i < 10; i++ {
-		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "echo"}, key)
+		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__echo"}, key)
 		if resp.Error != nil && strings.Contains(resp.Error.Message, "rate limit") {
 			rateLimited = true
 			break
@@ -377,7 +377,7 @@ rate_limits:
 	// Exhaust tool-a's limit
 	var toolALimited bool
 	for i := 0; i < 10; i++ {
-		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tool-a"}, key)
+		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__tool-a"}, key)
 		if resp.Error != nil && strings.Contains(resp.Error.Message, "rate limit") {
 			toolALimited = true
 			break
@@ -388,7 +388,7 @@ rate_limits:
 	}
 
 	// tool-b should still work
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tool-b"}, key)
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__tool-b"}, key)
 	if resp.Error != nil {
 		t.Errorf("tool-b should still work, got error: %v", resp.Error)
 	}
@@ -414,7 +414,7 @@ upstreams:
 
 	var rateLimited bool
 	for i := 0; i < 10; i++ {
-		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "echo"}, "")
+		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__echo"}, "")
 		if resp.Error != nil && strings.Contains(resp.Error.Message, "rate limit") {
 			rateLimited = true
 			break
@@ -461,8 +461,8 @@ upstreams:
 		t.Fatalf("tools/list error: %v", resp.Error)
 	}
 	names := toolNames(resp)
-	if !contains(names, "working-tool") {
-		t.Errorf("expected working-tool, got: %v", names)
+	if !contains(names, "healthy__working-tool") {
+		t.Errorf("expected healthy__working-tool, got: %v", names)
 	}
 }
 
@@ -484,7 +484,7 @@ upstreams:
 	)
 
 	// First call works
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky-tool"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky__flaky-tool"}, "")
 	if resp.Error != nil {
 		t.Fatalf("first call should work: %v", resp.Error)
 	}
@@ -495,7 +495,7 @@ upstreams:
 	}
 
 	// Second call returns error
-	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky-tool"}, "")
+	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky__flaky-tool"}, "")
 	if resp.Error == nil {
 		t.Fatal("expected error when upstream is down")
 	}
@@ -544,8 +544,8 @@ upstreams:
 
 	resp = gw.jsonRPCRequest(t, "tools/list", nil, "")
 	names = toolNames(resp)
-	if !contains(names, "recovered") {
-		t.Errorf("expected recovered tool after refresh, got: %v", names)
+	if !contains(names, "recovering__recovered") {
+		t.Errorf("expected recovering__recovered tool after refresh, got: %v", names)
 	}
 }
 
@@ -569,8 +569,8 @@ upstreams:
 	// Original tools
 	resp := gw.jsonRPCRequest(t, "tools/list", nil, "")
 	names := toolNames(resp)
-	if !contains(names, "original") {
-		t.Fatalf("expected original tool, got: %v", names)
+	if !contains(names, "dynamic__original") {
+		t.Fatalf("expected dynamic__original tool, got: %v", names)
 	}
 
 	// Upstream adds a new tool
@@ -582,8 +582,8 @@ upstreams:
 	// Before refresh, new tool not visible
 	resp = gw.jsonRPCRequest(t, "tools/list", nil, "")
 	names = toolNames(resp)
-	if contains(names, "new-tool") {
-		t.Error("new-tool should not be visible before refresh")
+	if contains(names, "dynamic__new-tool") {
+		t.Error("dynamic__new-tool should not be visible before refresh")
 	}
 
 	// Refresh
@@ -592,8 +592,8 @@ upstreams:
 	// After refresh, new tool appears
 	resp = gw.jsonRPCRequest(t, "tools/list", nil, "")
 	names = toolNames(resp)
-	if !contains(names, "new-tool") {
-		t.Errorf("expected new-tool after refresh, got: %v", names)
+	if !contains(names, "dynamic__new-tool") {
+		t.Errorf("expected dynamic__new-tool after refresh, got: %v", names)
 	}
 }
 
@@ -620,7 +620,7 @@ upstreams:
 
 	// Make several requests
 	for i := 0; i < 3; i++ {
-		gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "metric-tool"}, "")
+		gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__metric-tool"}, "")
 	}
 
 	// Check metrics
@@ -653,8 +653,8 @@ upstreams:
 	)
 
 	// Make tool calls
-	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "audit-tool"}, "")
-	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "audit-tool"}, "")
+	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__audit-tool"}, "")
+	gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__audit-tool"}, "")
 
 	// Query audit database directly
 	db, err := sql.Open("sqlite", auditPath)
@@ -664,7 +664,7 @@ upstreams:
 	defer db.Close()
 
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE tool = 'audit-tool'").Scan(&count)
+	err = db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE tool = 'tools__audit-tool'").Scan(&count)
 	if err != nil {
 		t.Fatalf("query audit: %v", err)
 	}
@@ -674,7 +674,7 @@ upstreams:
 
 	// Check entry fields
 	var caller, method, status string
-	err = db.QueryRow("SELECT caller, method, status FROM audit_log WHERE tool = 'audit-tool' LIMIT 1").Scan(&caller, &method, &status)
+	err = db.QueryRow("SELECT caller, method, status FROM audit_log WHERE tool = 'tools__audit-tool' LIMIT 1").Scan(&caller, &method, &status)
 	if err != nil {
 		t.Fatalf("query audit entry: %v", err)
 	}
@@ -824,7 +824,7 @@ upstreams:
 		withTransport("tools", mt),
 	)
 
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fake-tool"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "tools__fake-tool"}, "")
 	if resp.Error == nil {
 		t.Fatal("expected unknown tool error")
 	}
@@ -940,12 +940,12 @@ upstreams:
 		t.Fatalf("tools/list: %v", resp.Error)
 	}
 	names := toolNames(resp)
-	if !contains(names, "greet") {
-		t.Fatalf("expected greet tool, got: %v", names)
+	if !contains(names, "greet_server__greet") {
+		t.Fatalf("expected greet_server__greet tool, got: %v", names)
 	}
 
 	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{
-		"name":      "greet",
+		"name":      "greet_server__greet",
 		"arguments": map[string]any{"name": "World"},
 	}, "")
 	if resp.Error != nil {
@@ -1026,7 +1026,7 @@ upstreams:
 	handler := proxy.NewHandler(rt, nil, m, nil)
 	srv := server.New(cfg, handler, rt, m, &server.Options{})
 
-	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"sse-tool"},"id":1}`
+	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"sse_server__sse-tool"},"id":1}`
 	httpReq := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1156,7 +1156,7 @@ upstreams:
 	)
 
 	// Verify the slow tool responds correctly (the gateway can handle it)
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "slow-tool"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "slow__slow-tool"}, "")
 	if resp.Error != nil {
 		t.Fatalf("slow-tool should respond: %v", resp.Error)
 	}
@@ -1392,7 +1392,7 @@ upstreams:
 
 	// Send requests that fail — should trip after 3.
 	for i := 0; i < 3; i++ {
-		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile"}, "")
+		resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile_upstream__fragile"}, "")
 		if resp.Error == nil {
 			t.Fatalf("call %d: expected error", i)
 		}
@@ -1401,7 +1401,7 @@ upstreams:
 	innerCallsBefore := callCount
 
 	// Next request should fail fast (circuit open) without hitting inner transport.
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "fragile_upstream__fragile"}, "")
 	if resp.Error == nil {
 		t.Fatal("expected circuit open error")
 	}
@@ -1461,7 +1461,7 @@ upstreams:
 	)
 
 	// Should succeed on the 3rd attempt.
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "flaky-tool"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "retry_upstream__flaky-tool"}, "")
 	if resp.Error != nil {
 		t.Fatalf("expected success after retries, got: %s", resp.Error.Message)
 	}
@@ -1518,11 +1518,11 @@ upstreams:
 
 	// Trip the circuit.
 	for i := 0; i < 2; i++ {
-		gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+		gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recovery_upstream__recoverable"}, "")
 	}
 
 	// Circuit is open — fails fast.
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recovery_upstream__recoverable"}, "")
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "circuit open") {
 		t.Fatal("expected circuit open error")
 	}
@@ -1534,13 +1534,13 @@ upstreams:
 	time.Sleep(60 * time.Millisecond)
 
 	// Half-open probe should succeed, closing the circuit.
-	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recovery_upstream__recoverable"}, "")
 	if resp.Error != nil {
 		t.Fatalf("expected success after recovery, got: %s", resp.Error.Message)
 	}
 
 	// Subsequent requests should work normally.
-	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recoverable"}, "")
+	resp = gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "recovery_upstream__recoverable"}, "")
 	if resp.Error != nil {
 		t.Fatalf("expected continued success, got: %s", resp.Error.Message)
 	}
@@ -1601,7 +1601,7 @@ upstreams:
 	gw.Metrics = m
 
 	// This request fails once then succeeds on retry.
-	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "metered"}, "")
+	resp := gw.jsonRPCRequest(t, "tools/call", map[string]any{"name": "metered_upstream__metered"}, "")
 	if resp.Error != nil {
 		t.Fatalf("expected success after retry, got: %s", resp.Error.Message)
 	}

@@ -116,7 +116,7 @@ func TestToolsListMergesUpstreams(t *testing.T) {
 	for _, tool := range result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"alpha", "beta", "gamma"} {
+	for _, want := range []string{"a__alpha", "b__beta", "b__gamma"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in merged list", want)
 		}
@@ -125,6 +125,7 @@ func TestToolsListMergesUpstreams(t *testing.T) {
 
 func TestToolsCallDispatchesCorrectly(t *testing.T) {
 	called := ""
+	var receivedName string
 
 	mockA := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "alpha"}},
@@ -138,6 +139,10 @@ func TestToolsCallDispatchesCorrectly(t *testing.T) {
 		tools: []transport.ToolSchema{{Name: "beta"}},
 		roundTrip: func(_ context.Context, req *jsonrpc.Request) (transport.TransportResult, error) {
 			called = "b"
+			// Verify the upstream receives the original (unprefixed) tool name.
+			var p struct{ Name string }
+			json.Unmarshal(req.Params, &p)
+			receivedName = p.Name
 			resp, _ := jsonrpc.NewResponse(req.ID, map[string]any{"from": "b"})
 			return transport.NewJSONResult(resp), nil
 		},
@@ -150,7 +155,8 @@ func TestToolsCallDispatchesCorrectly(t *testing.T) {
 
 	h := NewHandler(rt, nil, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "beta", "arguments": map[string]any{}})
+	// Client sends the prefixed name.
+	params, _ := json.Marshal(map[string]any{"name": "b__beta", "arguments": map[string]any{}})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -163,6 +169,9 @@ func TestToolsCallDispatchesCorrectly(t *testing.T) {
 
 	if called != "b" {
 		t.Errorf("expected upstream b to be called, got %q", called)
+	}
+	if receivedName != "beta" {
+		t.Errorf("upstream should receive original name 'beta', got %q", receivedName)
 	}
 
 	var resp jsonrpc.Response
@@ -233,8 +242,8 @@ func TestUpstreamDownAtStartup(t *testing.T) {
 	if len(result.Tools) != 1 {
 		t.Fatalf("expected 1 tool from healthy upstream, got %d", len(result.Tools))
 	}
-	if result.Tools[0].Name != "alpha" {
-		t.Errorf("expected tool alpha, got %q", result.Tools[0].Name)
+	if result.Tools[0].Name != "healthy__alpha" {
+		t.Errorf("expected tool healthy__alpha, got %q", result.Tools[0].Name)
 	}
 }
 
@@ -253,7 +262,7 @@ func TestToolsCallSSEPassthrough(t *testing.T) {
 
 	h := NewHandler(rt, nil, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "streamy"})
+	params, _ := json.Marshal(map[string]any{"name": "a__streamy"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -289,7 +298,7 @@ func TestToolsCallWritesDirectResponse(t *testing.T) {
 
 	h := NewHandler(rt, nil, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "direct"})
+	params, _ := json.Marshal(map[string]any{"name": "a__direct"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -418,15 +427,15 @@ upstreams:
 		names[tool.Name] = true
 	}
 
-	if !names["http_tool"] {
-		t.Error("missing http_tool in merged tool list")
+	if !names["http_upstream__http_tool"] {
+		t.Errorf("missing http_upstream__http_tool in merged tool list, got %v", names)
 	}
-	if !names["test_echo"] {
-		t.Error("missing test_echo (stdio) in merged tool list")
+	if !names["stdio_upstream__test_echo"] {
+		t.Errorf("missing stdio_upstream__test_echo in merged tool list, got %v", names)
 	}
 
-	// tools/call to http_tool should route to HTTP upstream.
-	params, _ := json.Marshal(map[string]any{"name": "http_tool"})
+	// tools/call to http_tool should route to HTTP upstream (using prefixed name).
+	params, _ := json.Marshal(map[string]any{"name": "http_upstream__http_tool"})
 	callReq := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -449,9 +458,9 @@ upstreams:
 		t.Errorf("expected from=http, got %v", httpResult["from"])
 	}
 
-	// tools/call to test_echo should route to stdio upstream.
+	// tools/call to test_echo should route to stdio upstream (using prefixed name).
 	params, _ = json.Marshal(map[string]any{
-		"name":      "test_echo",
+		"name":      "stdio_upstream__test_echo",
 		"arguments": map[string]string{"message": "hi"},
 	})
 	callReq = &jsonrpc.Request{
@@ -573,7 +582,7 @@ func TestRateLimitHeadersOnAllowedRequest(t *testing.T) {
 	}}
 	h := NewHandler(rt, rl, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	params, _ := json.Marshal(map[string]any{"name": "a__alpha"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -613,7 +622,7 @@ func TestRateLimitHeadersOnDeniedRequest(t *testing.T) {
 	}}
 	h := NewHandler(rt, rl, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	params, _ := json.Marshal(map[string]any{"name": "a__alpha"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -651,7 +660,7 @@ func TestNoRateLimitHeadersWithoutLimiter(t *testing.T) {
 	// No rate limiter configured.
 	h := NewHandler(rt, nil, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	params, _ := json.Marshal(map[string]any{"name": "a__alpha"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -685,7 +694,7 @@ func BenchmarkFullRoundTrip(b *testing.B) {
 
 	h := NewHandler(rt, nil, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "echo", "arguments": map[string]any{}})
+	params, _ := json.Marshal(map[string]any{"name": "a__echo", "arguments": map[string]any{}})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -724,7 +733,7 @@ rate_limits:
 	rl := policy.NewLocalRateLimiter(cfg)
 	h := NewHandler(rt, rl, nil, nil)
 
-	params, _ := json.Marshal(map[string]any{"name": "echo", "arguments": map[string]any{}})
+	params, _ := json.Marshal(map[string]any{"name": "a__echo", "arguments": map[string]any{}})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",

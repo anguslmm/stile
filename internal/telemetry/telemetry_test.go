@@ -84,7 +84,7 @@ func TestSpansCreatedForToolsCall(t *testing.T) {
 	// Create a root span to act as the parent (simulates handleMCP + dispatch).
 	ctx, rootSpan := tracer.Start(context.Background(), "dispatch")
 
-	params, _ := json.Marshal(map[string]any{"name": "alpha"})
+	params, _ := json.Marshal(map[string]any{"name": "a__alpha"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",
@@ -124,8 +124,8 @@ func TestSpansCreatedForToolsCall(t *testing.T) {
 			for _, a := range s.Attributes {
 				attrs[string(a.Key)] = a.Value.AsString()
 			}
-			if attrs["mcp.tool"] != "alpha" {
-				t.Errorf("dispatch span mcp.tool = %q, want alpha", attrs["mcp.tool"])
+			if attrs["mcp.tool"] != "a__alpha" {
+				t.Errorf("dispatch span mcp.tool = %q, want a__alpha", attrs["mcp.tool"])
 			}
 			if attrs["mcp.upstream"] != "a" {
 				t.Errorf("dispatch span mcp.upstream = %q, want a", attrs["mcp.upstream"])
@@ -161,7 +161,7 @@ func TestSSEStreamErrorProducesErrorSpan(t *testing.T) {
 
 	ctx, rootSpan := tracer.Start(context.Background(), "dispatch")
 
-	params, _ := json.Marshal(map[string]any{"name": "streamy"})
+	params, _ := json.Marshal(map[string]any{"name": "a__streamy"})
 	req := &jsonrpc.Request{
 		JSONRPC: jsonrpc.Version,
 		Method:  "tools/call",

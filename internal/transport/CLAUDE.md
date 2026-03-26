@@ -11,7 +11,7 @@ Defines the `Transport` interface and its two implementations (HTTP and stdio) f
 - **`HTTPTransport`** — Sends JSON-RPC over HTTP POST. Supports bearer token auth (static from env or per-request from context via `auth.UpstreamTokenFromContext`), custom TLS (CA, mTLS, skip-verify), and W3C trace context propagation. Health tracked via consecutive failure count (threshold: 3). Per-request token from context takes priority over static token.
 - **`StdioTransport`** — Spawns a child process and communicates via line-delimited JSON on stdin/stdout. Requests are serialized with a mutex (stdio is inherently sequential). Supports automatic restart with exponential backoff (up to 10 restarts, 1s–60s). Marks permanently failed after max restarts.
 - **`SSEReader`** / **`SSEEvent`** — Minimal SSE parser (event + data fields only; ignores id, retry, comments).
-- **`ToolSchema`** — MCP tool definition (`name`, `description`, `inputSchema`).
+- **`ToolSchema`** — MCP tool definition (`name`, `description`, `inputSchema`, `annotations`). The `annotations` field is a `map[string]any` used for upstream attribution metadata (`x-stile-upstream`, `x-stile-original-name`).
 - **`ConnectError`** / **`StatusError`** — Typed errors from `HTTPTransport.RoundTrip` for connection failures vs. HTTP error status codes.
 
 ## Key Functions

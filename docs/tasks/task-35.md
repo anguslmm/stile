@@ -1,6 +1,6 @@
 # Task 35 — Tool naming and upstream attribution
 
-Status: **todo**
+Status: **done**
 
 ## Goal
 

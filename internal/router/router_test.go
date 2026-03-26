@@ -102,11 +102,42 @@ func (c *controllableTransport) SetFail(fail bool) {
 }
 
 func newConfigs(names ...string) []config.UpstreamConfig {
-	yaml := "upstreams:\n"
+	y := "upstreams:\n"
 	for _, n := range names {
-		yaml += fmt.Sprintf("  - name: %s\n    transport: streamable-http\n    url: http://fake/%s\n", n, n)
+		y += fmt.Sprintf("  - name: %s\n    transport: streamable-http\n    url: http://fake/%s\n", n, n)
 	}
-	cfg, err := config.LoadBytes([]byte(yaml))
+	cfg, err := config.LoadBytes([]byte(y))
+	if err != nil {
+		panic(err)
+	}
+	return cfg.Upstreams()
+}
+
+// newConfigsWithPrefix creates upstream configs with explicit tool_prefix values.
+// Args are pairs: name1, prefix1, name2, prefix2, ...
+func newConfigsWithPrefix(args ...string) []config.UpstreamConfig {
+	if len(args)%2 != 0 {
+		panic("newConfigsWithPrefix requires name, prefix pairs")
+	}
+	y := "upstreams:\n"
+	for i := 0; i < len(args); i += 2 {
+		name, prefix := args[i], args[i+1]
+		y += fmt.Sprintf("  - name: %s\n    transport: streamable-http\n    url: http://fake/%s\n    tool_prefix: %q\n", name, name, prefix)
+	}
+	cfg, err := config.LoadBytes([]byte(y))
+	if err != nil {
+		panic(err)
+	}
+	return cfg.Upstreams()
+}
+
+// newConfigsNoPrefix creates upstream configs with prefixing disabled.
+func newConfigsNoPrefix(names ...string) []config.UpstreamConfig {
+	y := "upstreams:\n"
+	for _, n := range names {
+		y += fmt.Sprintf("  - name: %s\n    transport: streamable-http\n    url: http://fake/%s\n    tool_prefix: \"\"\n", n, n)
+	}
+	cfg, err := config.LoadBytes([]byte(y))
 	if err != nil {
 		panic(err)
 	}
@@ -137,8 +168,8 @@ func TestInitialDiscovery(t *testing.T) {
 	}
 	defer rt.Close()
 
-	// Resolve each tool.
-	for _, name := range []string{"alpha", "beta", "gamma"} {
+	// Resolve each tool by prefixed name.
+	for _, name := range []string{"a__alpha", "b__beta", "b__gamma"} {
 		route, err := rt.Resolve(name)
 		if err != nil {
 			t.Errorf("Resolve(%q): %v", name, err)
@@ -149,20 +180,23 @@ func TestInitialDiscovery(t *testing.T) {
 		}
 	}
 
-	// alpha belongs to upstream a.
-	route, _ := rt.Resolve("alpha")
+	// a__alpha belongs to upstream a with original name "alpha".
+	route, _ := rt.Resolve("a__alpha")
 	if route.Upstream.Name != "a" {
-		t.Errorf("expected alpha -> upstream a, got %q", route.Upstream.Name)
+		t.Errorf("expected a__alpha -> upstream a, got %q", route.Upstream.Name)
+	}
+	if route.OriginalName != "alpha" {
+		t.Errorf("expected OriginalName=alpha, got %q", route.OriginalName)
 	}
 
-	// beta belongs to upstream b.
-	route, _ = rt.Resolve("beta")
+	// b__beta belongs to upstream b.
+	route, _ = rt.Resolve("b__beta")
 	if route.Upstream.Name != "b" {
-		t.Errorf("expected beta -> upstream b, got %q", route.Upstream.Name)
+		t.Errorf("expected b__beta -> upstream b, got %q", route.Upstream.Name)
 	}
 }
 
-// Test 2: ListTools merges correctly
+// Test 2: ListTools merges correctly with prefixed names
 func TestListToolsMerges(t *testing.T) {
 	mockA := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "alpha"}},
@@ -190,7 +224,7 @@ func TestListToolsMerges(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"alpha", "beta", "gamma"} {
+	for _, want := range []string{"a__alpha", "b__beta", "b__gamma"} {
 		if !names[want] {
 			t.Errorf("missing tool %q", want)
 		}
@@ -212,6 +246,12 @@ func TestResolveUnknownTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
+
+	// Unprefixed name should not resolve.
+	_, err = rt.Resolve("alpha")
+	if err == nil {
+		t.Fatal("expected error for unprefixed tool name")
+	}
 
 	_, err = rt.Resolve("nonexistent")
 	if err == nil {
@@ -235,12 +275,12 @@ func TestRefreshUpdatesTools(t *testing.T) {
 	}
 	defer rt.Close()
 
-	// Initially only alpha.
-	if _, err := rt.Resolve("alpha"); err != nil {
-		t.Fatalf("expected alpha to be resolvable: %v", err)
+	// Initially only alpha (prefixed).
+	if _, err := rt.Resolve("a__alpha"); err != nil {
+		t.Fatalf("expected a__alpha to be resolvable: %v", err)
 	}
-	if _, err := rt.Resolve("beta"); err == nil {
-		t.Fatal("expected beta to not be resolvable before refresh")
+	if _, err := rt.Resolve("a__beta"); err == nil {
+		t.Fatal("expected a__beta to not be resolvable before refresh")
 	}
 
 	// Add a new tool to the upstream.
@@ -249,8 +289,8 @@ func TestRefreshUpdatesTools(t *testing.T) {
 	rt.Refresh(context.Background())
 
 	// Now beta should be resolvable.
-	if _, err := rt.Resolve("beta"); err != nil {
-		t.Fatalf("expected beta to be resolvable after refresh: %v", err)
+	if _, err := rt.Resolve("a__beta"); err != nil {
+		t.Fatalf("expected a__beta to be resolvable after refresh: %v", err)
 	}
 }
 
@@ -270,9 +310,9 @@ func TestStaleUpstreamKeepsTools(t *testing.T) {
 	}
 	defer rt.Close()
 
-	// alpha is resolvable.
-	if _, err := rt.Resolve("alpha"); err != nil {
-		t.Fatalf("expected alpha resolvable: %v", err)
+	// alpha is resolvable (prefixed).
+	if _, err := rt.Resolve("a__alpha"); err != nil {
+		t.Fatalf("expected a__alpha resolvable: %v", err)
 	}
 
 	// Make upstream fail.
@@ -280,9 +320,9 @@ func TestStaleUpstreamKeepsTools(t *testing.T) {
 	rt.Refresh(context.Background())
 
 	// alpha should still be resolvable.
-	route, err := rt.Resolve("alpha")
+	route, err := rt.Resolve("a__alpha")
 	if err != nil {
-		t.Fatalf("expected alpha still resolvable after failure: %v", err)
+		t.Fatalf("expected a__alpha still resolvable after failure: %v", err)
 	}
 
 	// Upstream should be marked stale.
@@ -311,7 +351,7 @@ func TestUpstreamRecovery(t *testing.T) {
 	ct.SetFail(true)
 	rt.Refresh(context.Background())
 
-	route, _ := rt.Resolve("alpha")
+	route, _ := rt.Resolve("a__alpha")
 	if !route.Upstream.Stale {
 		t.Fatal("expected stale after failure")
 	}
@@ -319,7 +359,7 @@ func TestUpstreamRecovery(t *testing.T) {
 	ct.SetFail(false)
 	rt.Refresh(context.Background())
 
-	route, err = rt.Resolve("alpha")
+	route, err = rt.Resolve("a__alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,8 +368,10 @@ func TestUpstreamRecovery(t *testing.T) {
 	}
 }
 
-// Test 7: Duplicate tool name — first in config order wins
+// Test 7: Duplicate prefixed tool name — first in config order wins
 func TestDuplicateToolName(t *testing.T) {
+	// With prefixing, a__shared and b__shared are distinct. To test collision,
+	// both upstreams need the same prefix. Use explicit tool_prefix.
 	mockA := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "shared", Description: "from A"}},
 	}
@@ -339,7 +381,7 @@ func TestDuplicateToolName(t *testing.T) {
 
 	rt, err := New(
 		map[string]transport.Transport{"a": mockA, "b": mockB},
-		newConfigs("a", "b"),
+		newConfigsWithPrefix("a", "same", "b", "same"),
 		nil,
 	)
 	if err != nil {
@@ -347,14 +389,14 @@ func TestDuplicateToolName(t *testing.T) {
 	}
 	defer rt.Close()
 
-	route, err := rt.Resolve("shared")
+	route, err := rt.Resolve("same__shared")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// First upstream in config order (a) should win.
 	if route.Upstream.Name != "a" {
-		t.Errorf("expected upstream a to own 'shared', got %q", route.Upstream.Name)
+		t.Errorf("expected upstream a to own 'same__shared', got %q", route.Upstream.Name)
 	}
 	if route.Tool.Description != "from A" {
 		t.Errorf("expected description 'from A', got %q", route.Tool.Description)
@@ -431,13 +473,13 @@ func TestRefreshUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// gamma should now be resolvable.
-	route, err := rt.Resolve("gamma")
+	// gamma should now be resolvable (prefixed).
+	route, err := rt.Resolve("b__gamma")
 	if err != nil {
-		t.Fatalf("expected gamma resolvable: %v", err)
+		t.Fatalf("expected b__gamma resolvable: %v", err)
 	}
 	if route.Upstream.Name != "b" {
-		t.Errorf("expected gamma -> upstream b, got %q", route.Upstream.Name)
+		t.Errorf("expected b__gamma -> upstream b, got %q", route.Upstream.Name)
 	}
 }
 
@@ -521,24 +563,24 @@ func TestAddUpstream(t *testing.T) {
 	}
 	defer rt.Close()
 
-	// Initially only alpha.
-	if _, err := rt.Resolve("beta"); err == nil {
-		t.Fatal("expected beta to not exist yet")
+	// Initially only a__alpha.
+	if _, err := rt.Resolve("b__beta"); err == nil {
+		t.Fatal("expected b__beta to not exist yet")
 	}
 
-	// Add a new upstream.
+	// Add a new upstream (prefix defaults to name).
 	mockB := &mockTransport{
 		tools: []transport.ToolSchema{{Name: "beta"}},
 	}
 	rt.AddUpstream("b", mockB)
 
-	// beta should now be resolvable.
-	route, err := rt.Resolve("beta")
+	// beta should now be resolvable with prefix.
+	route, err := rt.Resolve("b__beta")
 	if err != nil {
-		t.Fatalf("expected beta resolvable: %v", err)
+		t.Fatalf("expected b__beta resolvable: %v", err)
 	}
 	if route.Upstream.Name != "b" {
-		t.Errorf("expected beta -> upstream b, got %q", route.Upstream.Name)
+		t.Errorf("expected b__beta -> upstream b, got %q", route.Upstream.Name)
 	}
 }
 
@@ -561,14 +603,14 @@ func TestRemoveUpstream(t *testing.T) {
 	}
 	defer rt.Close()
 
-	if _, err := rt.Resolve("beta"); err != nil {
-		t.Fatalf("expected beta resolvable: %v", err)
+	if _, err := rt.Resolve("b__beta"); err != nil {
+		t.Fatalf("expected b__beta resolvable: %v", err)
 	}
 
 	rt.RemoveUpstream("b")
 
-	if _, err := rt.Resolve("beta"); err == nil {
-		t.Fatal("expected beta to not be resolvable after removal")
+	if _, err := rt.Resolve("b__beta"); err == nil {
+		t.Fatal("expected b__beta to not be resolvable after removal")
 	}
 
 	names := rt.Upstreams()
@@ -586,13 +628,13 @@ func benchResolve(b *testing.B, numUpstreams, toolsPerUpstream int) {
 	allToolNames := make([]string, 0, numUpstreams*toolsPerUpstream)
 
 	for i := range numUpstreams {
-		name := fmt.Sprintf("upstream-%d", i)
+		name := fmt.Sprintf("upstream_%d", i)
 		names[i] = name
 		tools := make([]transport.ToolSchema, toolsPerUpstream)
 		for j := range toolsPerUpstream {
 			toolName := fmt.Sprintf("tool_%d_%d", i, j)
 			tools[j] = transport.ToolSchema{Name: toolName}
-			allToolNames = append(allToolNames, toolName)
+			allToolNames = append(allToolNames, name+"__"+toolName)
 		}
 		transports[name] = &mockTransport{tools: tools}
 	}
@@ -625,7 +667,7 @@ func BenchmarkListTools(b *testing.B) {
 	transports := make(map[string]transport.Transport)
 	names := make([]string, 10)
 	for i := range 10 {
-		name := fmt.Sprintf("upstream-%d", i)
+		name := fmt.Sprintf("upstream_%d", i)
 		names[i] = name
 		tools := make([]transport.ToolSchema, 20)
 		for j := range 20 {
@@ -642,6 +684,168 @@ func BenchmarkListTools(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		rt.ListTools()
+	}
+}
+
+// Test: Explicit tool_prefix overrides default
+func TestExplicitToolPrefix(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "search"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"github": mock},
+		newConfigsWithPrefix("github", "gh"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	route, err := rt.Resolve("gh__search")
+	if err != nil {
+		t.Fatalf("expected gh__search resolvable: %v", err)
+	}
+	if route.OriginalName != "search" {
+		t.Errorf("expected OriginalName=search, got %q", route.OriginalName)
+	}
+
+	// Default prefix (github__search) should NOT resolve.
+	if _, err := rt.Resolve("github__search"); err == nil {
+		t.Fatal("expected github__search to not resolve with explicit prefix 'gh'")
+	}
+}
+
+// Test: Empty tool_prefix disables prefixing
+func TestEmptyToolPrefixDisablesPrefixing(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "search", Description: "find things"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"legacy": mock},
+		newConfigsNoPrefix("legacy"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	// Tool name should pass through unchanged.
+	route, err := rt.Resolve("search")
+	if err != nil {
+		t.Fatalf("expected search resolvable without prefix: %v", err)
+	}
+	if route.OriginalName != "search" {
+		t.Errorf("expected OriginalName=search, got %q", route.OriginalName)
+	}
+
+	// Prefixed name should NOT resolve.
+	if _, err := rt.Resolve("legacy__search"); err == nil {
+		t.Fatal("expected legacy__search to not resolve when prefix is disabled")
+	}
+}
+
+// Test: ListTools returns tools with upstream annotations
+func TestListToolsAnnotations(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "query", Description: "run a query"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"db": mock},
+		newConfigs("db"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	tools := rt.ListTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	tool := tools[0]
+	if tool.Name != "db__query" {
+		t.Errorf("expected name db__query, got %q", tool.Name)
+	}
+
+	upstream, ok := tool.Annotations["x-stile-upstream"]
+	if !ok {
+		t.Fatal("missing x-stile-upstream annotation")
+	}
+	if upstream != "db" {
+		t.Errorf("expected x-stile-upstream=db, got %q", upstream)
+	}
+
+	original, ok := tool.Annotations["x-stile-original-name"]
+	if !ok {
+		t.Fatal("missing x-stile-original-name annotation")
+	}
+	if original != "query" {
+		t.Errorf("expected x-stile-original-name=query, got %q", original)
+	}
+}
+
+// Test: No x-stile-original-name annotation when prefix is disabled
+func TestAnnotationsNoPrefixNoOriginalName(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "query"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"db": mock},
+		newConfigsNoPrefix("db"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	tools := rt.ListTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	tool := tools[0]
+	// x-stile-upstream should still be present.
+	if _, ok := tool.Annotations["x-stile-upstream"]; !ok {
+		t.Fatal("missing x-stile-upstream annotation even with no prefix")
+	}
+	// x-stile-original-name should NOT be present (no rename happened).
+	if _, ok := tool.Annotations["x-stile-original-name"]; ok {
+		t.Fatal("x-stile-original-name should not be present when prefix is disabled")
+	}
+}
+
+// Test: Hyphenated upstream name is sanitized for default prefix
+func TestHyphenatedUpstreamNameSanitized(t *testing.T) {
+	mock := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "search"}},
+	}
+
+	rt, err := New(
+		map[string]transport.Transport{"my-server": mock},
+		newConfigs("my-server"),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	// Hyphen in upstream name becomes underscore in prefix.
+	route, err := rt.Resolve("my_server__search")
+	if err != nil {
+		t.Fatalf("expected my_server__search resolvable: %v", err)
+	}
+	if route.OriginalName != "search" {
+		t.Errorf("expected OriginalName=search, got %q", route.OriginalName)
 	}
 }
 

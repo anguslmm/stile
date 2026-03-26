@@ -6,7 +6,7 @@ This document traces the complete path a request follows through Stile, from an 
 
 Config is loaded, then these are built in order:
 - **Transports** — one per upstream (`streamable-http` or `stdio`), keyed by name. If an upstream has `circuit_breaker` or `retry` config, the transport is wrapped in a `ResilientTransport` that adds circuit breaking and retries.
-- **RouteTable** — takes the transports, calls `tools/list` on each upstream to discover what tools they offer, builds a `tool name -> upstream` map
+- **RouteTable** — takes the transports, calls `tools/list` on each upstream to discover what tools they offer, builds a `prefixed tool name -> upstream` map. Each tool is prefixed with `{upstream_name}__` by default (configurable via `tool_prefix`), and annotated with `x-stile-upstream` and `x-stile-original-name`.
 - **Authenticator** — backed by a caller store (SQLite or Postgres) + role config
 - **RateLimiter** — created via `NewRateLimiterFromConfig`: `LocalRateLimiter` (in-memory token buckets) or `RedisRateLimiter` (Redis sliding windows) based on `rate_limits.backend`
 - **proxy.Handler** — holds the RouteTable and RateLimiter
@@ -51,7 +51,7 @@ This is the core path:
 
 **b. ACL check** — if there's a caller in context, check `caller.CanAccessTool(toolName)`. Denied -> error response.
 
-**c. Route** — `router.Resolve(toolName)` looks up the tool name in the route table -> returns a `Route` containing the `Upstream` (which has the `Transport`). Unknown tool -> error response.
+**c. Route** — `router.Resolve(toolName)` looks up the (prefixed) tool name in the route table -> returns a `Route` containing the `Upstream` (which has the `Transport`) and the `OriginalName` (tool name before prefix was applied). Unknown tool -> error response.
 
 **d. Rate limit** — grab the `RateLimiter` (interface), then call `rl.Allow(caller, tool, upstream, roles)`. This checks three limits in order:
 1. Per-caller limit
@@ -62,14 +62,16 @@ The backend is configurable: `LocalRateLimiter` uses in-memory token buckets (si
 
 **e. OAuth token injection** — if an `UpstreamAuthResolver` is configured (any upstream uses `auth.type: oauth`), the proxy calls `resolver.ResolveToken(ctx, callerName, upstreamName)`. If the upstream requires OAuth and the user has connected the provider, the per-user access token is attached to the context. If the token is expired, it's automatically refreshed via the provider's token endpoint. If the user hasn't connected, a clear JSON-RPC error is returned. The token is read from context in `HTTPTransport.RoundTrip` and injected as the `Authorization: Bearer` header, taking priority over any static token. See [oauth-setup.md](oauth-setup.md) for configuration and usage.
 
-**f. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
+**f. Tool name rewriting** — if the tool was prefixed, `rewriteToolName` creates a copy of the request with `params.name` set to the original upstream tool name. The upstream never sees Stile's prefix.
+
+**g. Forward** — `route.Upstream.Transport.RoundTrip(ctx, req)`. If the transport is wrapped in a `ResilientTransport`, the request first passes through:
 1. **Circuit breaker** — if the upstream's circuit is open, the request fails immediately with `"upstream circuit open"`. After a cooldown period, one probe request is allowed through (half-open state). If it succeeds, the circuit closes; if it fails, the circuit reopens.
 2. **Retry loop** — on retryable errors (connection failures or configured HTTP status codes like 502/503/504), the request is retried with jittered exponential backoff up to `max_attempts`.
 3. **Actual transport** — sends the JSON-RPC request to the upstream. Per-upstream `timeout` controls the HTTP `ResponseHeaderTimeout`.
 
 The `Transport` interface hides whether the underlying transport is an HTTP POST or writing to a child process's stdin.
 
-**g. Response** — `RoundTrip` returns a `TransportResult`, which is either:
+**h. Response** — `RoundTrip` returns a `TransportResult`, which is either:
 - `JSONResult` — upstream returned `application/json`. The response is already parsed.
 - `StreamResult` — upstream returned `text/event-stream` (SSE). The stream is still open.
 

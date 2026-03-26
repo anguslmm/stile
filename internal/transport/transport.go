@@ -19,9 +19,10 @@ import (
 
 // ToolSchema represents an MCP tool definition returned by tools/list.
 type ToolSchema struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
 }
 
 // TransportResult is a sealed union representing the result of a round-trip

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,9 @@ import (
 	"github.com/gobwas/glob"
 	"gopkg.in/yaml.v3"
 )
+
+// toolPrefixPattern matches valid tool prefix characters (alphanumeric + underscore).
+var toolPrefixPattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
 // RateLimit represents a parsed rate limit specification (e.g. "100/min").
 type RateLimit struct {
@@ -78,6 +82,7 @@ type UpstreamConfig interface {
 	upstreamConfig() // sealed — only types in this package can implement UpstreamConfig
 	Name() string
 	Tools() []string
+	ToolPrefix() *string
 	RateLimit() *RateLimit
 	Timeout() time.Duration
 	CircuitBreaker() *CircuitBreakerConfig
@@ -168,6 +173,7 @@ type HTTPUpstreamConfig struct {
 	auth           *AuthConfig
 	tls            *UpstreamTLSConfig
 	tools          []string
+	toolPrefix     *string
 	rateLimit      *RateLimit
 	timeout        time.Duration
 	circuitBreaker *CircuitBreakerConfig
@@ -180,6 +186,7 @@ func (h *HTTPUpstreamConfig) Name() string                { return h.name }
 func (h *HTTPUpstreamConfig) URL() string                  { return h.url }
 func (h *HTTPUpstreamConfig) Auth() *AuthConfig            { return h.auth }
 func (h *HTTPUpstreamConfig) TLS() *UpstreamTLSConfig      { return h.tls }
+func (h *HTTPUpstreamConfig) ToolPrefix() *string          { return h.toolPrefix }
 func (h *HTTPUpstreamConfig) RateLimit() *RateLimit        { return h.rateLimit }
 
 // Tools returns a copy of the tools slice.
@@ -207,6 +214,7 @@ type StdioUpstreamConfig struct {
 	command        []string
 	env            map[string]string
 	tools          []string
+	toolPrefix     *string
 	rateLimit      *RateLimit
 	timeout        time.Duration
 	circuitBreaker *CircuitBreakerConfig
@@ -216,6 +224,7 @@ type StdioUpstreamConfig struct {
 func (*StdioUpstreamConfig) upstreamConfig() {}
 
 func (s *StdioUpstreamConfig) Name() string         { return s.name }
+func (s *StdioUpstreamConfig) ToolPrefix() *string   { return s.toolPrefix }
 func (s *StdioUpstreamConfig) RateLimit() *RateLimit { return s.rateLimit }
 
 // Command returns a copy of the command slice.
@@ -849,6 +858,7 @@ type rawUpstreamConfig struct {
 	Auth           *rawAuthConfig           `yaml:"auth"`
 	TLS            *rawUpstreamTLSConfig    `yaml:"tls"`
 	Tools          []string                 `yaml:"tools"`
+	ToolPrefix     *string                  `yaml:"tool_prefix"`
 	RateLimit      string                   `yaml:"rate_limit"`
 	Timeout        string                   `yaml:"timeout"`
 	CircuitBreaker *rawCircuitBreakerConfig `yaml:"circuit_breaker"`
@@ -1101,6 +1111,7 @@ func convert(raw rawConfig) (*Config, error) {
 				name:           ru.Name,
 				url:            ru.URL,
 				tools:          tools,
+				toolPrefix:     ru.ToolPrefix,
 				rateLimit:      rl,
 				timeout:        timeout,
 				circuitBreaker: cbCfg,
@@ -1126,6 +1137,7 @@ func convert(raw rawConfig) (*Config, error) {
 			s := &StdioUpstreamConfig{
 				name:           ru.Name,
 				tools:          tools,
+				toolPrefix:     ru.ToolPrefix,
 				rateLimit:      rl,
 				timeout:        timeout,
 				circuitBreaker: cbCfg,
@@ -1362,6 +1374,13 @@ func validate(raw rawConfig) error {
 			}
 		default:
 			return fmt.Errorf("config: upstream %q: transport must be \"streamable-http\" or \"stdio\", got %q", u.Name, u.Transport)
+		}
+
+		// Validate tool_prefix if explicitly set.
+		if u.ToolPrefix != nil && *u.ToolPrefix != "" {
+			if !toolPrefixPattern.MatchString(*u.ToolPrefix) {
+				return fmt.Errorf("config: upstream %q: tool_prefix %q must contain only alphanumeric characters and underscores", u.Name, *u.ToolPrefix)
+			}
 		}
 	}
 

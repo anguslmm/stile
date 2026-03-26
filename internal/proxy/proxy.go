@@ -214,6 +214,13 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		}
 	}
 
+	// Rewrite tool name to the original (un-prefixed) name before forwarding
+	// to the upstream. The upstream doesn't know about Stile's prefixes.
+	upstreamReq := req
+	if route.OriginalName != params.Name {
+		upstreamReq = rewriteToolName(req, route.OriginalName)
+	}
+
 	// Upstream round-trip span.
 	var rtSpan trace.Span
 	if h.tracer != nil {
@@ -222,7 +229,7 @@ func (h *Handler) HandleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		))
 	}
 
-	result, err := route.Upstream.Transport.RoundTrip(roundTripCtx, req)
+	result, err := route.Upstream.Transport.RoundTrip(roundTripCtx, upstreamReq)
 
 	if rtSpan != nil {
 		if err != nil {
@@ -325,6 +332,26 @@ func setRateLimitHeaders(w http.ResponseWriter, result *policy.RateLimitResult) 
 			retryAfter = 1
 		}
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+	}
+}
+
+// rewriteToolName creates a shallow copy of req with the tool name in Params replaced.
+func rewriteToolName(req *jsonrpc.Request, originalName string) *jsonrpc.Request {
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return req
+	}
+	nameBytes, _ := json.Marshal(originalName)
+	params["name"] = nameBytes
+	newParams, err := json.Marshal(params)
+	if err != nil {
+		return req
+	}
+	return &jsonrpc.Request{
+		JSONRPC: req.JSONRPC,
+		Method:  req.Method,
+		ID:      req.ID,
+		Params:  newParams,
 	}
 }
 

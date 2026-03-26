@@ -1296,6 +1296,79 @@ upstreams:
 	}
 }
 
+func TestToolPrefixExplicit(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://github-mcp.example.com
+    tool_prefix: "gh"
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.ToolPrefix() == nil {
+		t.Fatal("expected non-nil ToolPrefix")
+	}
+	if *u.ToolPrefix() != "gh" {
+		t.Errorf("expected ToolPrefix=gh, got %q", *u.ToolPrefix())
+	}
+}
+
+func TestToolPrefixEmptyDisablesPrefixing(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: legacy
+    transport: streamable-http
+    url: https://legacy.example.com
+    tool_prefix: ""
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.ToolPrefix() == nil {
+		t.Fatal("expected non-nil ToolPrefix for explicit empty string")
+	}
+	if *u.ToolPrefix() != "" {
+		t.Errorf("expected empty ToolPrefix, got %q", *u.ToolPrefix())
+	}
+}
+
+func TestToolPrefixNilDefault(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://github-mcp.example.com
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := cfg.Upstreams()[0]
+	if u.ToolPrefix() != nil {
+		t.Errorf("expected nil ToolPrefix when not set, got %q", *u.ToolPrefix())
+	}
+}
+
+func TestToolPrefixInvalidCharsRejected(t *testing.T) {
+	yaml := `
+upstreams:
+  - name: github
+    transport: streamable-http
+    url: https://github-mcp.example.com
+    tool_prefix: "my-prefix"
+`
+	_, err := LoadBytes([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for tool_prefix with hyphens")
+	}
+}
+
 func TestOAuthProviderConfigLoads(t *testing.T) {
 	yaml := `
 oauth_providers:
