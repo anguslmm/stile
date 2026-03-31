@@ -137,13 +137,21 @@ func New(cfg *config.Config, p *proxy.Handler, rt *router.RouteTable, m *metrics
 		mux.Handle("POST /admin/refresh", refreshHandler)
 	}
 
-	// Register OAuth flow endpoints (auth-protected).
+	// Register OAuth flow endpoints.
+	// Auth is NOT applied as blanket middleware here because:
+	// - /oauth/connect/{provider} handles its own auth (supports both
+	//   Authorization header via caller-in-context and signed URL tokens
+	//   for browser flows where headers can't be attached).
+	// - /oauth/callback is unauthenticated by design; the cryptographic
+	//   state parameter + PKCE protect it.
 	if opts != nil && opts.OAuthHandler != nil {
 		oauthMux := http.NewServeMux()
 		opts.OAuthHandler.Register(oauthMux)
+		// If authenticator is present, we still try to authenticate but don't
+		// reject unauthenticated requests — the handler decides.
 		var oauthRoot http.Handler = oauthMux
 		if opts.Authenticator != nil {
-			oauthRoot = opts.Authenticator.Middleware(oauthMux)
+			oauthRoot = opts.Authenticator.OptionalMiddleware(oauthMux)
 		}
 		mux.Handle("/oauth/", oauthRoot)
 	}

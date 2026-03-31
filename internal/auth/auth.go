@@ -318,6 +318,27 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// OptionalMiddleware is like Middleware but does not reject unauthenticated requests.
+// If authentication succeeds, the caller is set in context. If it fails, the request
+// proceeds without a caller. This is used for endpoints that support multiple auth
+// mechanisms (e.g. OAuth connect which accepts both header auth and signed URL tokens).
+func (a *Authenticator) OptionalMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, keyLabel, err := a.Authenticate(r)
+		if err == nil && caller != nil {
+			ctx := ContextWithCaller(r.Context(), caller)
+			if keyLabel == "oidc" {
+				ctx = ContextWithAuthMethod(ctx, "oidc")
+			} else {
+				ctx = ContextWithAuthMethod(ctx, "apikey")
+				ctx = ContextWithKeyLabel(ctx, keyLabel)
+			}
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // AdminAuthOption configures AdminAuthMiddleware behavior.
 type AdminAuthOption func(*adminAuthConfig)
 

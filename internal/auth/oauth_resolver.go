@@ -32,6 +32,27 @@ func NewOAuthResolver(upstreams []config.UpstreamConfig, store TokenStore, refre
 	return &OAuthResolver{store: store, refresher: refresher, upstreamProvider: m}
 }
 
+// IsConnected reports whether the caller has a token for the given upstream's OAuth provider.
+// Returns (true, "") if the upstream doesn't require OAuth.
+// Returns (false, providerName) if the user needs to connect.
+func (r *OAuthResolver) IsConnected(ctx context.Context, callerName, upstreamName string) (bool, string) {
+	providerName, ok := r.upstreamProvider[upstreamName]
+	if !ok {
+		return true, "" // not an OAuth upstream
+	}
+	_, err := r.store.GetToken(ctx, callerName, providerName)
+	if err != nil {
+		return false, providerName
+	}
+	return true, ""
+}
+
+// UpstreamProvider returns the OAuth provider name for the given upstream,
+// or "" if the upstream doesn't use OAuth.
+func (r *OAuthResolver) UpstreamProvider(upstreamName string) string {
+	return r.upstreamProvider[upstreamName]
+}
+
 // ResolveToken returns the bearer token for the given user and upstream.
 // Returns ("", nil) if the upstream doesn't use OAuth.
 // Returns an error if the user hasn't connected the required provider.

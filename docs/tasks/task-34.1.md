@@ -1,6 +1,6 @@
 # Task 34.1 — Fix OAuth connection UX and security
 
-Status: **todo**
+Status: **done**
 
 ## Problem
 

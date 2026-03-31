@@ -12,7 +12,9 @@ server:
 
 oauth_providers:
   mock:
-    auth_url: http://mock-oauth:9100/authorize
+    # auth_url is browser-facing (user's browser gets redirected here).
+    # token_url is server-to-server (Stile calls this directly inside Docker).
+    auth_url: http://localhost:9100/authorize
     token_url: http://mock-oauth:9100/token
     client_id_env: MOCK_OAUTH_CLIENT_ID       # "mock-client"
     client_secret_env: MOCK_OAUTH_CLIENT_SECRET # "mock-secret"

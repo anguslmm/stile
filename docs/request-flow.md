@@ -40,7 +40,7 @@ Reads the body and calls `jsonrpc.ParseMessage`:
 `handleSingle` checks the method:
 - **`initialize`** — returns server info and capabilities. No proxying.
 - **`ping`** — returns `{}`. No proxying.
-- **`tools/list`** — calls `proxy.HandleToolsList`, which asks the router for all tools, then filters by the caller's allowed globs if a caller is in context. Returns the filtered list. No upstream call.
+- **`tools/list`** — calls `proxy.HandleToolsList`, which asks the router for all tools, filters by the caller's allowed globs (ACL), then filters out tools from OAuth-protected upstreams where the caller hasn't connected. Returns the filtered list plus `x-stile-pending-connections` metadata with signed connect URLs for unconnected providers. No upstream call.
 - **`tools/call`** — the interesting one. Goes to `proxy.HandleToolsCall`.
 
 ## 6. Proxy: `tools/call` (`proxy.go` `HandleToolsCall`)
@@ -132,7 +132,7 @@ handleSingle
   |
   |-- initialize -- return server info
   |-- ping -------- return {}
-  |-- tools/list -- router.ListTools() -> filter by caller globs -> return
+  |-- tools/list -- router.ListTools() -> filter by caller globs -> filter unconnected OAuth -> return
   |-- tools/call -- proxy.HandleToolsCall:
                      |
                      |-- ACL check (caller.CanAccessTool)

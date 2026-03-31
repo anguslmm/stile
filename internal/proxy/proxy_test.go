@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/glob"
+
+	"github.com/anguslmm/stile/internal/auth"
 	"github.com/anguslmm/stile/internal/config"
 	"github.com/anguslmm/stile/internal/jsonrpc"
 	"github.com/anguslmm/stile/internal/policy"
@@ -770,6 +773,133 @@ func BenchmarkHandleToolsList(b *testing.B) {
 	for b.Loop() {
 		h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
 	}
+}
+
+// mockConnectionChecker implements ConnectionChecker for testing.
+type mockConnectionChecker struct {
+	// connected maps "caller:upstream" → true if connected.
+	connected map[string]bool
+	// providers maps upstream name → provider name.
+	providers map[string]string
+}
+
+func (m *mockConnectionChecker) IsConnected(_ context.Context, callerName, upstreamName string) (bool, string) {
+	prov, ok := m.providers[upstreamName]
+	if !ok {
+		return true, "" // not an OAuth upstream
+	}
+	key := callerName + ":" + upstreamName
+	if m.connected[key] {
+		return true, ""
+	}
+	return false, prov
+}
+
+func (m *mockConnectionChecker) ConnectURL(callerName, provider string) string {
+	return fmt.Sprintf("https://stile.example.com/oauth/connect/%s?tok=signed-for-%s", provider, callerName)
+}
+
+func TestToolsListFiltersUnconnectedOAuthTools(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	mockB := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "beta"}, {Name: "gamma"}},
+	}
+
+	rt := newTestRouter(t, []string{"a", "b"}, map[string]transport.Transport{
+		"a": mockA, "b": mockB,
+	})
+	defer rt.Close()
+
+	checker := &mockConnectionChecker{
+		connected: map[string]bool{
+			"alice:a": true, // alice is connected to upstream a
+			// alice is NOT connected to upstream b
+		},
+		providers: map[string]string{
+			"b": "github", // upstream b requires github OAuth
+		},
+	}
+
+	h := NewHandler(rt, nil, nil, nil, WithConnectionChecker(checker))
+
+	// With alice in context: should see only upstream a's tools.
+	// Use a caller with AllowedTools matching everything (no ACL filtering).
+	allTools := glob.MustCompile("*")
+	ctx := auth.ContextWithCaller(context.Background(), &auth.Caller{
+		Name:         "alice",
+		AllowedTools: []glob.Glob{allTools},
+	})
+
+	resp, err := h.HandleToolsList(ctx, jsonrpc.IntID(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result struct {
+		Tools              []transport.ToolSchema `json:"tools"`
+		PendingConnections []PendingConnection    `json:"x-stile-pending-connections"`
+	}
+	json.Unmarshal(resp.Result, &result)
+
+	// Should only have upstream a's tool.
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool (a__alpha only), got %d: %v", len(result.Tools), toolNames(result.Tools))
+	}
+	if result.Tools[0].Name != "a__alpha" {
+		t.Errorf("expected a__alpha, got %s", result.Tools[0].Name)
+	}
+
+	// Should have a pending connection for github.
+	if len(result.PendingConnections) != 1 {
+		t.Fatalf("expected 1 pending connection, got %d", len(result.PendingConnections))
+	}
+	if result.PendingConnections[0].Provider != "github" {
+		t.Errorf("pending provider = %q, want github", result.PendingConnections[0].Provider)
+	}
+	if !strings.Contains(result.PendingConnections[0].ConnectURL, "/oauth/connect/github") {
+		t.Errorf("pending connect URL missing path: %s", result.PendingConnections[0].ConnectURL)
+	}
+}
+
+func TestToolsListNoFilterWithoutConnectionChecker(t *testing.T) {
+	mockA := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "alpha"}},
+	}
+	mockB := &mockTransport{
+		tools: []transport.ToolSchema{{Name: "beta"}},
+	}
+
+	rt := newTestRouter(t, []string{"a", "b"}, map[string]transport.Transport{
+		"a": mockA, "b": mockB,
+	})
+	defer rt.Close()
+
+	// No connection checker → all tools returned.
+	h := NewHandler(rt, nil, nil, nil)
+
+	resp, err := h.HandleToolsList(context.Background(), jsonrpc.IntID(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result struct {
+		Tools []transport.ToolSchema `json:"tools"`
+	}
+	json.Unmarshal(resp.Result, &result)
+
+	if len(result.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(result.Tools))
+	}
+}
+
+func toolNames(tools []transport.ToolSchema) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
 }
 
 func TestNoRateLimitHeadersOnNonToolCall(t *testing.T) {

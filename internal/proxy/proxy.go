@@ -32,14 +32,33 @@ type UpstreamAuthResolver interface {
 	ResolveToken(ctx context.Context, callerName, upstreamName string) (string, error)
 }
 
+// ConnectionChecker checks whether a caller has connected to a required OAuth provider
+// for a given upstream, and generates signed connect URLs.
+type ConnectionChecker interface {
+	// IsConnected reports whether the caller has a token for the given upstream.
+	// Returns (true, "") if the upstream doesn't require OAuth.
+	// Returns (false, providerName) if the user needs to connect.
+	IsConnected(ctx context.Context, callerName, upstreamName string) (connected bool, provider string)
+	// ConnectURL returns a signed URL the user can open in a browser to connect.
+	ConnectURL(callerName, provider string) string
+}
+
+// PendingConnection describes an OAuth provider the caller needs to connect
+// before certain tools become available.
+type PendingConnection struct {
+	Provider   string `json:"provider"`
+	ConnectURL string `json:"connect_url"`
+}
+
 // Handler dispatches MCP tool calls to the correct upstream via the router.
 type Handler struct {
-	router       *router.RouteTable
-	rateLimiter  policy.RateLimiter
-	metrics      *metrics.Metrics
-	auditStore   audit.Store
-	tracer       trace.Tracer
-	authResolver UpstreamAuthResolver
+	router            *router.RouteTable
+	rateLimiter       policy.RateLimiter
+	metrics           *metrics.Metrics
+	auditStore        audit.Store
+	tracer            trace.Tracer
+	authResolver      UpstreamAuthResolver
+	connectionChecker ConnectionChecker
 }
 
 // NewHandler creates a Handler backed by the given RouteTable.
@@ -65,9 +84,36 @@ func WithAuthResolver(r UpstreamAuthResolver) HandlerOption {
 	return func(h *Handler) { h.authResolver = r }
 }
 
+// WithConnectionChecker sets the connection checker for filtering unconnected OAuth tools.
+func WithConnectionChecker(c ConnectionChecker) HandlerOption {
+	return func(h *Handler) { h.connectionChecker = c }
+}
+
 // HandleToolsList returns the merged tool list from all upstreams,
-// filtered by the caller's allowed tools if a caller is present.
+// filtered by the caller's allowed tools and OAuth connection status.
 func (h *Handler) HandleToolsList(ctx context.Context, id jsonrpc.ID) (*jsonrpc.Response, error) {
+	tools, pending := h.filteredToolsWithPending(ctx)
+
+	result := struct {
+		Tools              []transport.ToolSchema `json:"tools"`
+		PendingConnections []PendingConnection    `json:"x-stile-pending-connections,omitempty"`
+	}{
+		Tools:              tools,
+		PendingConnections: pending,
+	}
+
+	return jsonrpc.NewResponse(id, result)
+}
+
+// FilteredTools returns the tool list filtered by the caller in context.
+func (h *Handler) FilteredTools(ctx context.Context) []transport.ToolSchema {
+	tools, _ := h.filteredToolsWithPending(ctx)
+	return tools
+}
+
+// filteredToolsWithPending applies ACL and OAuth connection filtering.
+// It returns the visible tools and any pending connections the caller needs.
+func (h *Handler) filteredToolsWithPending(ctx context.Context) ([]transport.ToolSchema, []PendingConnection) {
 	tools := h.router.ListTools()
 
 	caller := auth.CallerFromContext(ctx)
@@ -81,30 +127,44 @@ func (h *Handler) HandleToolsList(ctx context.Context, id jsonrpc.ID) (*jsonrpc.
 		tools = filtered
 	}
 
-	result := struct {
-		Tools []transport.ToolSchema `json:"tools"`
-	}{
-		Tools: tools,
-	}
-
-	return jsonrpc.NewResponse(id, result)
-}
-
-// FilteredTools returns the tool list filtered by the caller in context.
-func (h *Handler) FilteredTools(ctx context.Context) []transport.ToolSchema {
-	tools := h.router.ListTools()
-
-	caller := auth.CallerFromContext(ctx)
-	if caller != nil {
-		filtered := make([]transport.ToolSchema, 0, len(tools))
+	// Filter out tools from unconnected OAuth upstreams.
+	if h.connectionChecker != nil && caller != nil {
+		var connected []transport.ToolSchema
+		pendingSet := make(map[string]string) // provider → connect URL
 		for _, t := range tools {
-			if caller.CanAccessTool(t.Name) {
-				filtered = append(filtered, t)
+			upstream := toolUpstream(t)
+			if upstream == "" {
+				connected = append(connected, t)
+				continue
+			}
+			ok, provider := h.connectionChecker.IsConnected(ctx, caller.Name, upstream)
+			if ok {
+				connected = append(connected, t)
+			} else if provider != "" {
+				if _, seen := pendingSet[provider]; !seen {
+					pendingSet[provider] = h.connectionChecker.ConnectURL(caller.Name, provider)
+				}
 			}
 		}
-		return filtered
+		tools = connected
+
+		var pending []PendingConnection
+		for prov, url := range pendingSet {
+			pending = append(pending, PendingConnection{Provider: prov, ConnectURL: url})
+		}
+		return tools, pending
 	}
-	return tools
+
+	return tools, nil
+}
+
+// toolUpstream extracts the upstream name from a tool's annotations.
+func toolUpstream(t transport.ToolSchema) string {
+	if t.Annotations == nil {
+		return ""
+	}
+	v, _ := t.Annotations["x-stile-upstream"].(string)
+	return v
 }
 
 // HandleToolsCall dispatches a tools/call request to the correct upstream.

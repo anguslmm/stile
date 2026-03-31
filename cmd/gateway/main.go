@@ -149,7 +149,16 @@ func main() {
 		refresher := auth.NewTokenRefresher(cfg.OAuthProviders(), nil)
 		resolver := auth.NewOAuthResolver(cfg.Upstreams(), tokenStore, refresher)
 		proxyOpts = append(proxyOpts, proxy.WithAuthResolver(resolver))
-		oauthHandler = auth.NewOAuthHandler(cfg.OAuthProviders(), tokenStore, "")
+		// Derive a deterministic signing key from ADMIN_API_KEY so all instances
+		// in a multi-instance deployment produce and verify the same signed URLs.
+		var oauthOpts []auth.OAuthHandlerOption
+		if adminKey := os.Getenv("ADMIN_API_KEY"); adminKey != "" {
+			derived := sha256.Sum256([]byte("stile-connect-signing:" + adminKey))
+			oauthOpts = append(oauthOpts, auth.WithSigningKey(derived[:]))
+		}
+		oauthHandler = auth.NewOAuthHandler(cfg.OAuthProviders(), tokenStore, "", oauthOpts...)
+		connChecker := auth.NewConnectionChecker(resolver, oauthHandler)
+		proxyOpts = append(proxyOpts, proxy.WithConnectionChecker(connChecker))
 		slog.Info("outbound OAuth enabled", "providers", len(cfg.OAuthProviders()))
 	}
 

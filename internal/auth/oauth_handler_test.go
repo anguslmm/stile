@@ -290,6 +290,149 @@ func TestOAuthHandler_ProviderError(t *testing.T) {
 	}
 }
 
+func TestOAuthHandler_ConnectWithSignedToken(t *testing.T) {
+	providerSrv, providerCfg := newTestOAuthProvider(t)
+	defer providerSrv.Close()
+
+	tokenStore, err := NewSQLiteTokenStore(t.TempDir() + "/tokens.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tokenStore.Close()
+
+	stileBase := "https://stile.example.com"
+	handler := NewOAuthHandler(
+		[]config.OAuthProviderConfig{providerCfg},
+		tokenStore,
+		stileBase,
+	)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Generate a signed connect URL for alice.
+	connectURL := handler.GenerateConnectURL("alice@example.com", "testprovider")
+
+	// Extract the tok parameter.
+	u, err := url.Parse(connectURL)
+	if err != nil {
+		t.Fatalf("parse connect URL: %v", err)
+	}
+	tok := u.Query().Get("tok")
+	if tok == "" {
+		t.Fatal("expected tok parameter in signed URL")
+	}
+
+	// Use the signed token without caller in context (browser flow).
+	req := httptest.NewRequest("GET", "/oauth/connect/testprovider?tok="+url.QueryEscape(tok), nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect with signed token, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify it redirected to the provider.
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "/authorize") {
+		t.Errorf("expected redirect to /authorize, got %s", loc)
+	}
+}
+
+func TestOAuthHandler_SignedTokenExpiry(t *testing.T) {
+	providerSrv, providerCfg := newTestOAuthProvider(t)
+	defer providerSrv.Close()
+
+	tokenStore, err := NewSQLiteTokenStore(t.TempDir() + "/tokens.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tokenStore.Close()
+
+	handler := NewOAuthHandler(
+		[]config.OAuthProviderConfig{providerCfg},
+		tokenStore,
+		"https://stile.example.com",
+	)
+
+	// Create a token with past expiry by signing manually.
+	tok := handler.signConnectToken("alice@example.com")
+	// Verify the valid token works.
+	name, err := handler.verifyConnectToken(tok)
+	if err != nil {
+		t.Fatalf("valid token should verify: %v", err)
+	}
+	if name != "alice@example.com" {
+		t.Errorf("callerName = %q, want alice@example.com", name)
+	}
+
+	// Tamper with the token → invalid signature.
+	_, err = handler.verifyConnectToken(tok + "x")
+	if err == nil {
+		t.Error("tampered token should fail verification")
+	}
+
+	// Empty token should fail.
+	_, err = handler.verifyConnectToken("")
+	if err == nil {
+		t.Error("empty token should fail verification")
+	}
+}
+
+func TestOAuthHandler_SignedTokenFullFlow(t *testing.T) {
+	providerSrv, providerCfg := newTestOAuthProvider(t)
+	defer providerSrv.Close()
+
+	tokenStore, err := NewSQLiteTokenStore(t.TempDir() + "/tokens.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tokenStore.Close()
+
+	stileBase := "https://stile.example.com"
+	handler := NewOAuthHandler(
+		[]config.OAuthProviderConfig{providerCfg},
+		tokenStore,
+		stileBase,
+	)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Step 1: Start flow with signed token (no caller in context).
+	tok := handler.signConnectToken("bob@example.com")
+	req := httptest.NewRequest("GET", "/oauth/connect/testprovider?tok="+url.QueryEscape(tok), nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+
+	loc := w.Header().Get("Location")
+	locURL, _ := url.Parse(loc)
+	state := locURL.Query().Get("state")
+
+	// Step 2: Callback completes the flow.
+	callbackURL := fmt.Sprintf("/oauth/callback?state=%s&code=valid-code", state)
+	req2 := httptest.NewRequest("GET", callbackURL, nil)
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("callback returned %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// Verify token was stored for bob (not alice or anonymous).
+	token, err := tokenStore.GetToken(context.Background(), "bob@example.com", "testprovider")
+	if err != nil {
+		t.Fatalf("GetToken after callback: %v", err)
+	}
+	if token.AccessToken != "test-access-token" {
+		t.Errorf("access_token = %q, want test-access-token", token.AccessToken)
+	}
+}
+
 func TestOAuthHandler_BadCodeExchange(t *testing.T) {
 	providerSrv, providerCfg := newTestOAuthProvider(t)
 	defer providerSrv.Close()

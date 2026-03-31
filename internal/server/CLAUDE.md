@@ -23,8 +23,8 @@ Inbound MCP HTTP server: routes requests from agents to the proxy pipeline.
 |---|---|---|
 | `POST /mcp` | POST | MCP JSON-RPC endpoint (auth-wrapped if `Authenticator` set) |
 | `/admin/` | any | `AdminRegistrar` routes (or fallback `POST /admin/refresh`) |
-| `/oauth/connect/{provider}` | GET | Starts OAuth authorization code flow (auth-wrapped) |
-| `/oauth/callback` | GET | Handles OAuth provider redirect (auth-wrapped) |
+| `/oauth/connect/{provider}` | GET | Starts OAuth authorization code flow (optional auth — supports both header and signed URL token) |
+| `/oauth/callback` | GET | Handles OAuth provider redirect (unauthenticated — protected by state + PKCE) |
 | `GET /healthz` | GET | liveness (optional) |
 | `GET /readyz` | GET | readiness (optional) |
 | `GET /metrics` | GET | Prometheus metrics (optional) |

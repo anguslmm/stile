@@ -17,8 +17,9 @@ Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credenti
 - **`TokenStore`** (interface) — Per-user OAuth token CRUD: `StoreToken`, `GetToken`, `DeleteToken`, `ListProviders`. Backed by `SQLiteTokenStore` or `PostgresTokenStore`.
 - **`OAuthToken`** — Holds access_token, refresh_token, token_type, expiry, scopes. `Expired()` checks with a 30-second buffer.
 - **`TokenRefresher`** — Exchanges refresh tokens for new access tokens via the provider's token endpoint. Preserves old refresh token if provider doesn't issue a new one.
-- **`OAuthResolver`** — Implements `proxy.UpstreamAuthResolver`. Maps upstream names to OAuth providers, looks up per-user tokens, and auto-refreshes expired tokens.
-- **`OAuthHandler`** — HTTP handler for the OAuth authorization code flow: `GET /oauth/connect/{provider}` (starts flow with PKCE) and `GET /oauth/callback` (exchanges code for tokens). Uses in-memory state map for CSRF protection.
+- **`OAuthResolver`** — Implements `proxy.UpstreamAuthResolver`. Maps upstream names to OAuth providers, looks up per-user tokens, and auto-refreshes expired tokens. Also provides `IsConnected(ctx, caller, upstream)` for checking connection status.
+- **`OAuthHandler`** — HTTP handler for the OAuth authorization code flow: `GET /oauth/connect/{provider}` (starts flow with PKCE) and `GET /oauth/callback` (exchanges code for tokens). Uses in-memory state map for CSRF protection. Supports browser auth via HMAC-signed connect URL tokens.
+- **`ConnectionCheckerAdapter`** — Combines `OAuthResolver` and `OAuthHandler` to implement `proxy.ConnectionChecker`. Used for filtering unconnected OAuth tools from `tools/list`.
 
 ## Key Functions
 
@@ -33,7 +34,8 @@ Inbound authentication (API key + OIDC), role-based tool ACLs, outbound credenti
 - `OpenTokenStore(cfg)` — Factory for token stores: returns `SQLiteTokenStore` or `PostgresTokenStore`.
 - `NewTokenRefresher(providers, client)` — Creates a refresher from config; resolves client_id/secret from env vars at construction.
 - `NewOAuthResolver(upstreams, store, refresher)` — Creates a resolver that maps OAuth-authed upstreams to providers and performs per-user token lookup + refresh.
-- `NewOAuthHandler(providers, store, baseURL)` — Creates OAuth flow endpoints. `Register(mux)` adds routes.
+- `NewOAuthHandler(providers, store, baseURL)` — Creates OAuth flow endpoints. `Register(mux)` adds routes. Generates a random HMAC-SHA256 signing key at startup for signed connect URLs.
+- `NewConnectionChecker(resolver, handler)` — Creates a `ConnectionCheckerAdapter` from a resolver and handler.
 - `UpstreamTokenFromContext(ctx)` / `ContextWithUpstreamToken(ctx, token)` — Context helpers for passing per-request OAuth tokens to the transport layer.
 
 ## OIDC Authentication
@@ -60,5 +62,9 @@ Both modes produce the same `Caller` struct. The authenticator tries OIDC first,
 - `PGNotifyListener` uses a dedicated `pgx` connection for `LISTEN` (separate from the `sql.DB` pool) and reconnects with 1s backoff.
 - `EnsureCaller` checks `RowsAffected` to only assign default roles on creation (not on subsequent no-op inserts).
 - Token store uses `pg_advisory_lock(43)` (separate from auth store's 42) for Postgres migrations.
-- OAuth state parameters are stored in-memory with a 10-minute expiry and 15-minute cleanup cycle. State is single-use (deleted after consumption).
+- **JWT-based OAuth state**: The OAuth state parameter is a signed HS256 JWT containing `sub` (caller), `provider`, `verifier` (PKCE code_verifier), and `exp` (10 minutes). This makes the state self-contained — any Stile instance with the same signing key can handle the callback. No in-memory pending map.
 - PKCE (S256) is always used for the authorization code flow per OAuth 2.1 best practices.
+- **Signing key**: All JWTs and signed connect tokens use a shared HMAC key. Derived from `ADMIN_API_KEY` in multi-instance deployments (via `WithSigningKey`); random per-instance if not set. Uses `golang-jwt/jwt/v5`.
+- **Signed connect URLs**: `OAuthHandler` generates HMAC-SHA256 signed tokens for browser-based OAuth flows. Format: `base64url(caller|expiry_unix|hmac_sig)`. 5-minute TTL. This allows users to open OAuth connect links in their browser without manually attaching an Authorization header.
+- **Callback security (audited)**: The `/oauth/callback` endpoint is intentionally unauthenticated. Defense-in-depth: (1) signed JWT state — only Stile can produce valid states; (2) PKCE S256 — code_verifier embedded in JWT, only Stile can exchange the code; (3) caller bound via JWT `sub` — tokens stored under the original user; (4) provider enforces single-use authorization codes.
+- `Authenticator.OptionalMiddleware` — Like `Middleware` but does not reject unauthenticated requests. Used for OAuth routes where the handler supports multiple auth mechanisms (header-based + signed URL token).
